@@ -8,49 +8,122 @@ on:
     branches: [ "main" ]
 
 jobs:
-  build:
-    name: Build Firmware
+  # -----------------------------------------------------------------------------
+  # JOB 1: SCAN TARGETS
+  # Parses Inc/targets.h and generates a JSON list of all boards to build.
+  # -----------------------------------------------------------------------------
+  setup-matrix:
     runs-on: ubuntu-latest
+    outputs:
+      matrix: ${{ steps.set-matrix.outputs.matrix }}
+    steps:
+    - uses: actions/checkout@v4
+    
+    - name: Generate Target Matrix
+      id: set-matrix
+      run: |
+        # Python script to parse targets.h and output JSON for GitHub Matrix
+        python3 -c '
+        import re
+        import json
+        import os
+
+        # Define Presets
+        PRESET_ARM = "build-arm"
+        PRESET_RISCV = "build-wch"
+
+        # Regex to find board names
+        regex = r"#define\s+FILE_NAME\s+\"([^\"]+)\""
+        
+        targets = []
+        
+        try:
+            with open("Inc/targets.h", "r") as f:
+                content = f.read()
+                matches = re.finditer(regex, content)
+                
+                for match in matches:
+                    board_name = match.group(1)
+                    
+                    # Skip commented out lines if regex caught them (basic check)
+                    # A better regex might be needed if you comment out defines often, 
+                    # but typically C comments are // 
+                    
+                    # Determine Architecture based on suffix convention
+                    # Adjust logic here if you have more RISC-V families
+                    if "_V203" in board_name:
+                        preset = PRESET_RISCV
+                        configure = "wch-riscv"
+                    else:
+                        preset = PRESET_ARM
+                        configure = "arm"
+                        
+                    targets.append({
+                        "name": board_name,
+                        "configure": configure,
+                        "build_preset": preset
+                    })
+                    
+        except FileNotFoundError:
+            print("Error: Inc/targets.h not found")
+            exit(1)
+
+        # Output to GitHub Actions variable
+        matrix_json = json.dumps({"include": targets})
+        print(f"Found {len(targets)} targets.")
+        
+        # GitHub Output Syntax
+        with open(os.environ["GITHUB_OUTPUT"], "a") as f:
+            f.write(f"matrix={matrix_json}")
+        '
+
+  # -----------------------------------------------------------------------------
+  # JOB 2: BUILD PER BOARD
+  # Runs in parallel for every target found in Job 1
+  # -----------------------------------------------------------------------------
+  build:
+    needs: setup-matrix
+    # The name field here creates the nice list in the sidebar!
+    name: ${{ matrix.name }}
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix: ${{ fromJson(needs.setup-matrix.outputs.matrix) }}
+
     steps:
     - uses: actions/checkout@v4
       with: { submodules: recursive }
     
-    # --- Dependencies ---
     - name: Install Build Tools
       run: sudo apt-get update && sudo apt-get install -y ninja-build cmake python3
 
-    # --- Caching Tools ---
     - name: Cache Tools
-      id: cache-tools
       uses: actions/cache@v4
       with:
         path: tools/
-        # Cache key based on the downloader script. If script changes, re-download.
         key: ${{ runner.os }}-am32-tools-${{ hashFiles('cmake/manage_tools.cmake') }}
 
-    # --- Build Steps ---
     - name: Setup toolset
-      run: |
-        cmake -P cmake/manage_tools.cmake
+      run: cmake -P cmake/manage_tools.cmake
     
-    - name: Configure & Build ARM
-      run: |
-        cmake --preset arm
-        cmake --build --preset build-arm
+    # Configure using the Architecture determined by the Python script
+    - name: Configure
+      run: cmake --preset ${{ matrix.configure }}
 
-    - name: Configure & Build WCH RISC-V
-      run: |
-        cmake --preset wch-riscv
-        cmake --build --preset build-wch
+    # Build ONLY the specific target for this job
+    - name: Build Target
+      run: cmake --build --preset ${{ matrix.build_preset }} --target ${{ matrix.name }}
 
-    # --- Artifacts ---
-    - name: Upload Artifacts
+    - name: Upload Artifact
       uses: actions/upload-artifact@v4
       with:
-        name: AM32-Firmware
-        # Finds hex files in build/arm and build/riscv
+        name: ${{ matrix.name }}
         path: build/**/*.hex
 
+  # -----------------------------------------------------------------------------
+  # JOB 3: RELEASE
+  # Merges all the separate hex files into one release
+  # -----------------------------------------------------------------------------
   release:
     name: Create Release
     needs: build
@@ -59,17 +132,16 @@ jobs:
     permissions: { contents: write }
     steps:
     - uses: actions/download-artifact@v4
-      with: { name: AM32-Firmware, path: firmware }
+      with:
+        # No name specified = Download ALL artifacts
+        path: firmware
+        merge-multiple: true
       
     - name: Prepare Assets
       run: |
         cd firmware
-        # Flatten: Move all nested .hex files to root of 'firmware' folder
         find . -type f -name "*.hex" -exec mv {} . \;
-        # Cleanup empty folders
         find . -type d -empty -delete
-        
-        # Create Checksums
         sha256sum *.hex > checksums.txt
         ls -la
 
