@@ -71,7 +71,7 @@ foreach(T ${TARGETS})
 endforeach()
 
 # 7. IDE CONFIGURATION
-include(VSCodeGenerator)
+include(VscodeGenerator)
 am32_generate_launch_json()
 
 message(STATUS "--- Configuration Complete ---")
