@@ -1,0 +1,1286 @@
+################################################################################
+# FILE: .vscode/settings.json
+################################################################################
+
+{
+    // Use Ninja for all platforms (Windows/Linux/Mac). It is much faster.
+    "cmake.generator": "Ninja",
+    // Cmake tools will provide everything for intellisense
+    "C_Cpp.default.configurationProvider": "ms-vscode.cmake-tools",
+    // Hide some files in project explorer
+    "files.exclude": {
+        "**/.git": true,
+        "**/.DS_Store": true,
+    },
+    // Enable formatting (using the Clang-Format target we added)
+    "editor.formatOnSave": true,
+    "C_Cpp.formatting": "clangFormat",
+    // -------------------------------------------------------------------------
+    // PLATFORM SPECIFIC OVERRIDES (Only if absolutely needed)
+    // -------------------------------------------------------------------------
+    // Generally, you DON'T need these if you installed tools via 
+    // winget/apt/brew as they add themselves to PATH.
+    // But if you have weird setups, you can do this:
+    /*
+    "[windows]": {
+        "cmake.cmakePath": "C:\\Program Files\\CMake\\bin\\cmake.exe"
+    },
+    "[linux]": {
+        "cmake.cmakePath": "/usr/bin/cmake"
+    }
+    */
+}
+
+################################################################################
+# FILE: CMakePresets.json
+################################################################################
+
+{
+    "version": 6,
+    "configurePresets": [
+        {
+            "name": "base",
+            "hidden": true,
+            "generator": "Ninja",
+            "cacheVariables": {
+                "CMAKE_EXPORT_COMPILE_COMMANDS": "ON",
+                "CMAKE_BUILD_TYPE": "RelWithDebInfo"
+            }
+        },
+        {
+            "name": "arm",
+            "inherits": "base",
+            "displayName": "ARM",
+            "toolchainFile": "${sourceDir}/cmake/toolchains/arm-none-eabi.cmake",
+            "binaryDir": "${sourceDir}/build/build_arm",
+            "cacheVariables": {
+                "ARCH": "ARM"
+            }
+        },
+        {
+            "name": "wch-riscv",
+            "inherits": "base",
+            "displayName": "WCH RISC-V",
+            "binaryDir": "${sourceDir}/build/build_wch_riscv",
+            "toolchainFile": "${sourceDir}/cmake/toolchains/wch-riscv-none-embed.cmake",
+            "cacheVariables": {
+                "ARCH": "WCH_RISCV"
+            }
+        }
+    ],
+    "buildPresets": [
+        {
+            "name": "build-arm",
+            "configurePreset": "arm",
+            "displayName": "Build ARM",
+            "description": "Compiles all ARM firmware targets"
+        },
+        {
+            "name": "build-wch",
+            "configurePreset": "wch-riscv",
+            "displayName": "Build WCH",
+            "description": "Compiles all RISC-V firmware targets"
+        }
+    ]
+}
+
+################################################################################
+# FILE: CMakeLists.txt
+################################################################################
+
+# ==============================================================================
+# AM32 FIRMWARE BUILD SYSTEM
+# ==============================================================================
+cmake_minimum_required(VERSION 3.20)
+
+# 1. PRE-FLIGHT CONFIGURATION
+set(TARGET_SKIP_LIST "DAKEFPV_35A_F415")
+include(cmake/manage_tools.cmake)
+
+# 2. SUPERBUILD (CI / FULL RELEASE)
+option(AM32_FULLBUILD "Build all architectures (ARM & RISC-V)" OFF)
+
+if(AM32_FULLBUILD)
+    project(AM32_SuperBuild NONE)
+    include(ExternalProject)
+
+    ExternalProject_Add(AM32_ARM
+        SOURCE_DIR "${CMAKE_CURRENT_SOURCE_DIR}"
+        BINARY_DIR "${CMAKE_CURRENT_BINARY_DIR}/build_arm"
+        CMAKE_ARGS "-DARCH=ARM" 
+                   "-DCMAKE_TOOLCHAIN_FILE=${CMAKE_CURRENT_SOURCE_DIR}/cmake/toolchains/arm-none-eabi.cmake" 
+                   "-DCMAKE_EXPORT_COMPILE_COMMANDS=ON"
+        INSTALL_COMMAND "" 
+        USES_TERMINAL_CONFIGURE ON 
+        USES_TERMINAL_BUILD ON
+    )
+    ExternalProject_Add(AM32_WCH_RISCV
+         SOURCE_DIR "${CMAKE_CURRENT_SOURCE_DIR}"
+         BINARY_DIR "${CMAKE_CURRENT_BINARY_DIR}/build_wch_riscv"
+         CMAKE_ARGS "-DARCH=WCH_RISCV" 
+                    "-DCMAKE_TOOLCHAIN_FILE=${CMAKE_CURRENT_SOURCE_DIR}/cmake/toolchains/wch-riscv-none-embed.cmake" 
+                    "-DCMAKE_EXPORT_COMPILE_COMMANDS=ON"
+         INSTALL_COMMAND "" 
+         USES_TERMINAL_CONFIGURE ON 
+         USES_TERMINAL_BUILD ON
+     )
+    return() 
+endif()
+
+# 3. TOOLCHAIN SELECTION
+if(NOT DEFINED CMAKE_TOOLCHAIN_FILE)
+    if(ARCH STREQUAL "ARM")
+        set(CMAKE_TOOLCHAIN_FILE "${CMAKE_CURRENT_SOURCE_DIR}/cmake/toolchains/arm-none-eabi.cmake")
+    elseif(ARCH STREQUAL "WCH_RISCV")
+        set(CMAKE_TOOLCHAIN_FILE "${CMAKE_CURRENT_SOURCE_DIR}/cmake/toolchains/wch-riscv-none-embed.cmake")
+    else()
+        message(FATAL_ERROR "No ARCH specified! usage: cmake -DARCH=ARM (or WCH_RISCV) ..")
+    endif()
+endif()
+
+# 4. PROJECT INITIALIZATION
+project(AM32_${ARCH} C ASM)
+
+# 5. MODULE LOADING
+list(APPEND CMAKE_MODULE_PATH "${CMAKE_SOURCE_DIR}/cmake/modules")
+include(VersionUtils)
+include(TargetFactory)
+
+message(STATUS "[${ARCH}] Configuring AM32 v${FIRMWARE_VERSION} (${FIRMWARE_GIT_HASH})")
+
+# 6. LOAD TARGETS
+if(ARCH STREQUAL "ARM")
+    file(GLOB TARGETS "${CMAKE_SOURCE_DIR}/cmake/targets/arm/*.cmake")
+elseif(ARCH STREQUAL "WCH_RISCV")
+    file(GLOB TARGETS "${CMAKE_SOURCE_DIR}/cmake/targets/wch_riscv/*.cmake")
+endif()
+
+foreach(T ${TARGETS})
+    message(STATUS "Loading Target: ${T}")
+    include(${T})
+endforeach()
+
+# 7. IDE CONFIGURATION
+include(VSCodeGenerator)
+am32_generate_launch_json()
+
+message(STATUS "--- Configuration Complete ---")
+
+################################################################################
+# FILE: cmake/manage_tools.cmake
+################################################################################
+
+cmake_minimum_required(VERSION 3.20)
+
+# 1. SETUP DIRECTORIES
+set(TOOLS_DIR "${CMAKE_CURRENT_LIST_DIR}/../tools")
+get_filename_component(TOOLS_DIR "${TOOLS_DIR}" ABSOLUTE)
+set(DOWNLOADS_DIR "${CMAKE_CURRENT_LIST_DIR}/../downloads")
+file(MAKE_DIRECTORY "${TOOLS_DIR}")
+file(MAKE_DIRECTORY "${DOWNLOADS_DIR}")
+
+# 2. ARM GCC
+set(ARM_GCC_DIR "${TOOLS_DIR}/gcc-arm")
+set(ARM_URL_BASE "https://developer.arm.com/-/media/Files/downloads/gnu-rm/10-2020q4/gcc-arm-none-eabi-10-2020-q4-major")
+
+if(CMAKE_HOST_WIN32)
+    set(ARM_URL "${ARM_URL_BASE}-win32.zip")
+    set(ARM_CACHE_FILE "${DOWNLOADS_DIR}/arm-gcc-win32.zip")
+elseif(CMAKE_HOST_APPLE)
+    set(ARM_URL "${ARM_URL_BASE}-mac.tar.bz2")
+    set(ARM_CACHE_FILE "${DOWNLOADS_DIR}/arm-gcc-mac.tar.bz2")
+else()
+    set(ARM_URL "${ARM_URL_BASE}-x86_64-linux.tar.bz2")
+    set(ARM_CACHE_FILE "${DOWNLOADS_DIR}/arm-gcc-linux.tar.bz2")
+endif()
+
+if(NOT EXISTS "${ARM_GCC_DIR}")
+    message(STATUS "[Tools] ARM GCC missing. Installing...")
+    if(NOT EXISTS "${ARM_CACHE_FILE}")
+        file(DOWNLOAD "${ARM_URL}" "${ARM_CACHE_FILE}" SHOW_PROGRESS)
+    endif()
+    file(ARCHIVE_EXTRACT INPUT "${ARM_CACHE_FILE}" DESTINATION "${TOOLS_DIR}")
+    file(GLOB EXTRACTED "${TOOLS_DIR}/gcc-arm-none-eabi-*")
+    if(EXTRACTED)
+        file(RENAME "${EXTRACTED}" "${ARM_GCC_DIR}")
+    endif()
+endif()
+
+# 3. ARM OPENOCD (xPack)
+set(ARM_OPENOCD_DIR "${TOOLS_DIR}/openocd-arm")
+set(XP_BASE "https://github.com/xpack-dev-tools/openocd-xpack/releases/download/v0.12.0-3/xpack-openocd-0.12.0-3")
+
+if(CMAKE_HOST_WIN32)
+    set(XP_URL "${XP_BASE}-win32-x64.zip")
+    set(XP_CACHE "${DOWNLOADS_DIR}/openocd-win.zip")
+elseif(CMAKE_HOST_APPLE)
+    set(XP_URL "${XP_BASE}-darwin-x64.tar.gz")
+    set(XP_CACHE "${DOWNLOADS_DIR}/openocd-mac.tar.gz")
+else()
+    set(XP_URL "${XP_BASE}-linux-x64.tar.gz")
+    set(XP_CACHE "${DOWNLOADS_DIR}/openocd-linux.tar.gz")
+endif()
+
+if(NOT EXISTS "${ARM_OPENOCD_DIR}")
+    message(STATUS "[Tools] ARM OpenOCD missing. Installing...")
+    if(NOT EXISTS "${XP_CACHE}")
+        file(DOWNLOAD "${XP_URL}" "${XP_CACHE}" SHOW_PROGRESS)
+    endif()
+    file(ARCHIVE_EXTRACT INPUT "${XP_CACHE}" DESTINATION "${TOOLS_DIR}")
+    file(GLOB XP_EXTRACTED "${TOOLS_DIR}/xpack-openocd-*")
+    if(XP_EXTRACTED)
+        file(RENAME "${XP_EXTRACTED}" "${ARM_OPENOCD_DIR}")
+    endif()
+endif()
+
+# ==============================================================================
+# 4. WCH (MOUNRIVER) RISC-V TOOLCHAIN
+# ==============================================================================
+set(WCH_GCC_DIR "${TOOLS_DIR}/gcc-wch-riscv") 
+set(WCH_OCD_DIR "${TOOLS_DIR}/openocd-wch-riscv")
+set(WCH_CACHE_FILE "${DOWNLOADS_DIR}/wch_toolchain.archive")
+
+if(NOT EXISTS "${WCH_GCC_DIR}" OR NOT EXISTS "${WCH_OCD_DIR}")
+    message(STATUS "[Tools] WCH RISC-V Tools missing. Installing...")
+
+    # 1. Download (Same as before)
+    if(NOT EXISTS "${WCH_CACHE_FILE}")
+        if(CMAKE_HOST_WIN32)
+            set(MRS_ID "1823552948062416898")
+        elseif(CMAKE_HOST_APPLE)
+            set(MRS_ID "1991353229960581122")
+        else()
+            set(MRS_ID "1993872528621211649")
+        endif()
+        
+        set(API_URL "https://api.mounriver.com/mountriver/api/version/fetchRecentOpenOcdUrl?resourceId=${MRS_ID}")
+        file(DOWNLOAD "${API_URL}" "${DOWNLOADS_DIR}/mrs.json")
+        file(READ "${DOWNLOADS_DIR}/mrs.json" JSON)
+        string(REGEX MATCH "\"result\":[ \t]*\"([^\"]+)\"" _ ${JSON})
+        set(DL_URL ${CMAKE_MATCH_1})
+        file(REMOVE "${DOWNLOADS_DIR}/mrs.json")
+        
+        message(STATUS "[Tools] Downloading WCH Toolchain...")
+        file(DOWNLOAD "${DL_URL}" "${WCH_CACHE_FILE}" SHOW_PROGRESS)
+    endif()
+
+    message(STATUS "[Tools] Extracting WCH Toolchain...")
+    
+    # 2. Extract
+    set(TEMP_ROOT "${TOOLS_DIR}/riscv_temp_extract")
+    if(EXISTS "${TEMP_ROOT}")
+        file(REMOVE_RECURSE "${TEMP_ROOT}")
+    endif()
+    file(MAKE_DIRECTORY "${TEMP_ROOT}")
+    file(ARCHIVE_EXTRACT INPUT "${WCH_CACHE_FILE}" DESTINATION "${TEMP_ROOT}")
+
+    # 3. Smart Search for GCC (Recursive, depth-agnostic)
+    #    We search for the binary name anywhere.
+    file(GLOB_RECURSE GCC_FOUND "${TEMP_ROOT}/riscv-none-embed-gcc*")
+    
+    set(FINAL_GCC_BIN "")
+    foreach(ITEM ${GCC_FOUND})
+        # Filter: Ensure it is inside a 'bin' folder to avoid picking up unrelated files
+        if(ITEM MATCHES "/bin/riscv-none-embed-gcc")
+            set(FINAL_GCC_BIN "${ITEM}")
+            break()
+        endif()
+    endforeach()
+
+    if(FINAL_GCC_BIN)
+        get_filename_component(GCC_BIN_DIR "${FINAL_GCC_BIN}" DIRECTORY)
+        get_filename_component(GCC_ROOT "${GCC_BIN_DIR}/.." ABSOLUTE)
+        
+        if(EXISTS "${WCH_GCC_DIR}") 
+            file(REMOVE_RECURSE "${WCH_GCC_DIR}")
+        endif()
+        file(RENAME "${GCC_ROOT}" "${WCH_GCC_DIR}")
+    else()
+        message(FATAL_ERROR "[Tools] Failed to locate 'riscv-none-embed-gcc' in extracted archive!")
+    endif()
+
+
+    # 4. Smart Search for OpenOCD
+    #    We search for the binary name anywhere.
+    file(GLOB_RECURSE OCD_FOUND "${TEMP_ROOT}/openocd*")
+    
+    set(FINAL_OCD_BIN "")
+    foreach(ITEM ${OCD_FOUND})
+        # Filter: Ensure it is inside 'bin' and ends with 'openocd' (or .exe)
+        # We avoid 'openocd.cfg' or folder names
+        if(ITEM MATCHES "/bin/openocd(\\.exe)?$")
+            set(FINAL_OCD_BIN "${ITEM}")
+            break()
+        endif()
+    endforeach()
+
+    if(FINAL_OCD_BIN)
+        get_filename_component(OCD_BIN_DIR "${FINAL_OCD_BIN}" DIRECTORY)
+        get_filename_component(OCD_ROOT "${OCD_BIN_DIR}/.." ABSOLUTE)
+        
+        if(EXISTS "${WCH_OCD_DIR}") 
+            file(REMOVE_RECURSE "${WCH_OCD_DIR}")
+        endif()
+        file(RENAME "${OCD_ROOT}" "${WCH_OCD_DIR}")
+    else()
+        message(FATAL_ERROR "[Tools] Failed to locate 'openocd' in extracted archive!")
+    endif()
+
+    # Cleanup
+    file(REMOVE_RECURSE "${TEMP_ROOT}")
+
+else()
+    message(STATUS "[Tools] WCH RISC-V Tools present.")
+endif()
+
+################################################################################
+# FILE: cmake/targets/arm/target_g071.cmake
+################################################################################
+
+set(MCU_ROOT "Mcu/g071")
+set(MCU_PART "STM32G071xx")
+
+am32_process_family(
+    FAMILY            "G071"
+    ARCH              "ARM"
+    LINKER_SCRIPT     "${CMAKE_SOURCE_DIR}/${MCU_ROOT}/STM32G071GBUX_FLASH.ld"
+    SVD_FILE          "${CMAKE_SOURCE_DIR}/${MCU_ROOT}/STM32G071.svd"
+    OCD_CONFIG_FILE   "${CMAKE_SOURCE_DIR}/${MCU_ROOT}/openocd.cfg"
+    
+    CPU_FLAGS         -mcpu=cortex-m0plus -mthumb
+    
+    SOURCE_DIRS       
+        "${CMAKE_SOURCE_DIR}/${MCU_ROOT}/Startup"
+        "${CMAKE_SOURCE_DIR}/${MCU_ROOT}/Drivers/STM32G0xx_HAL_Driver/Src"
+        "${CMAKE_SOURCE_DIR}/${MCU_ROOT}/Src"
+
+    INCLUDES
+        ${MCU_ROOT}/Inc
+        ${MCU_ROOT}/Drivers/STM32G0xx_HAL_Driver/Inc
+        ${MCU_ROOT}/Drivers/CMSIS/Include
+        ${MCU_ROOT}/Drivers/CMSIS/Device/ST/STM32G0xx/Include
+
+    DEFINES     
+        ${MCU_PART}
+        G071                        
+        USE_FULL_LL_DRIVER
+        HSE_VALUE=8000000
+        HSE_STARTUP_TIMEOUT=100
+        LSE_STARTUP_TIMEOUT=5000
+        LSE_VALUE=32768
+        HSI_VALUE=16000000
+        LSI_VALUE=32000
+        VDD_VALUE=3300
+        DATA_CACHE_ENABLE=1
+        INSTRUCTION_CACHE_ENABLE=0
+        PREFETCH_ENABLE=1
+)
+
+
+################################################################################
+# FILE: cmake/targets/arm/target_f421.cmake
+################################################################################
+
+set(MCU_ROOT "Mcu/f421")
+set(MCU_PART "AT32F421K8U7")
+
+am32_process_family(
+    FAMILY            "F421"
+    ARCH              "ARM"
+    LINKER_SCRIPT     "${CMAKE_SOURCE_DIR}/${MCU_ROOT}/AT32F421x6_FLASH.ld"
+    SVD_FILE          "${CMAKE_SOURCE_DIR}/${MCU_ROOT}/AT32F421xx_v2.svd"
+    OCD_CONFIG_FILE   "${CMAKE_SOURCE_DIR}/${MCU_ROOT}/openocd.cfg"
+    
+    CPU_FLAGS         -mcpu=cortex-m4 -mthumb
+    
+    # PASS DIRECTORIES, NOT FILES
+    SOURCE_DIRS       
+        "${CMAKE_SOURCE_DIR}/${MCU_ROOT}/Startup"
+        "${CMAKE_SOURCE_DIR}/${MCU_ROOT}/Drivers/drivers/src"
+        "${CMAKE_SOURCE_DIR}/${MCU_ROOT}/Src"
+
+    INCLUDES
+        ${MCU_ROOT}/Inc
+        ${MCU_ROOT}/Drivers/drivers/inc
+        ${MCU_ROOT}/Drivers/CMSIS/cm4/core_support
+        ${MCU_ROOT}/Drivers/CMSIS/cm4/device_support
+
+    DEFINES     
+        ${MCU_PART} 
+        F421      
+        USE_STDPERIPH_DRIVER
+)
+
+
+################################################################################
+# FILE: cmake/targets/arm/target_f051.cmake
+################################################################################
+
+set(MCU_ROOT "Mcu/f051")
+set(MCU_PART "STM32F051x8")
+
+am32_process_family(
+    FAMILY            "F051"
+    ARCH              "ARM"
+    LINKER_SCRIPT     "${CMAKE_SOURCE_DIR}/${MCU_ROOT}/STM32F051K6TX_FLASH.ld"
+    SVD_FILE          "${CMAKE_SOURCE_DIR}/${MCU_ROOT}/STM32F0x1.svd"
+    OCD_CONFIG_FILE   "${CMAKE_SOURCE_DIR}/${MCU_ROOT}/openocd.cfg"
+    
+    CPU_FLAGS         -mcpu=cortex-m0 -mthumb
+    
+    # PASS DIRECTORIES, NOT FILES
+    SOURCE_DIRS       
+        "${CMAKE_SOURCE_DIR}/${MCU_ROOT}/Startup"
+        "${CMAKE_SOURCE_DIR}/${MCU_ROOT}/Drivers/STM32F0xx_HAL_Driver/Src"
+        "${CMAKE_SOURCE_DIR}/${MCU_ROOT}/Src"
+
+    INCLUDES
+        ${MCU_ROOT}/Inc
+        ${MCU_ROOT}/Drivers/STM32F0xx_HAL_Driver/Inc
+        ${MCU_ROOT}/Drivers/CMSIS/Include
+        ${MCU_ROOT}/Drivers/CMSIS/Device/ST/STM32F0xx/Include
+
+    DEFINES 
+        ${MCU_PART}    
+        F051
+        USE_FULL_LL_DRIVER
+        HSE_VALUE=8000000
+        HSE_STARTUP_TIMEOUT=100
+        LSE_STARTUP_TIMEOUT=5000
+        LSE_VALUE=32768
+        DATA_CACHE_ENABLE=0
+        INSTRUCTION_CACHE_ENABLE=0
+        VDD_VALUE=3300
+        LSI_VALUE=40000
+        HSI_VALUE=8000000
+        PREFETCH_ENABLE=1
+)
+
+
+################################################################################
+# FILE: cmake/targets/arm/target_f031.cmake
+################################################################################
+
+set(MCU_ROOT "Mcu/f031")
+set(MCU_PART "STM32F031x6")
+
+am32_process_family(
+    FAMILY            "F031"
+    ARCH              "ARM"
+    LINKER_SCRIPT     "${CMAKE_SOURCE_DIR}/${MCU_ROOT}/STM32F031C6TX_FLASH.ld"
+    SVD_FILE          "${CMAKE_SOURCE_DIR}/${MCU_ROOT}/STM32F0x1.svd"
+    OCD_CONFIG_FILE   "${CMAKE_SOURCE_DIR}/${MCU_ROOT}/openocd.cfg"
+    
+    CPU_FLAGS         -mcpu=cortex-m0 -mthumb
+    
+    # PASS DIRECTORIES, NOT FILES
+    SOURCE_DIRS       
+        "${CMAKE_SOURCE_DIR}/${MCU_ROOT}/Startup"
+        "${CMAKE_SOURCE_DIR}/${MCU_ROOT}/Drivers/STM32F0xx_HAL_Driver/Src"
+        "${CMAKE_SOURCE_DIR}/${MCU_ROOT}/Src"
+
+    INCLUDES
+        "${MCU_ROOT}/Inc"
+        "${MCU_ROOT}/Drivers/STM32F0xx_HAL_Driver/Inc"
+        "${MCU_ROOT}/Drivers/CMSIS/Include"
+        "${MCU_ROOT}/Drivers/CMSIS/Device/ST/STM32F0xx/Include"
+
+    DEFINES
+        ${MCU_PART}    
+        F031                                      
+        USE_FULL_LL_DRIVER
+        HSE_VALUE=8000000
+        HSE_STARTUP_TIMEOUT=100
+        LSE_STARTUP_TIMEOUT=5000
+        LSE_VALUE=32768
+        DATA_CACHE_ENABLE=0
+        INSTRUCTION_CACHE_ENABLE=0
+        VDD_VALUE=3300
+        LSI_VALUE=40000
+        HSI_VALUE=8000000
+        PREFETCH_ENABLE=1
+)
+
+
+################################################################################
+# FILE: cmake/targets/arm/target_g031.cmake
+################################################################################
+
+set(MCU_ROOT "Mcu/g031")
+set(MCU_PART "STM32G031xx")
+
+am32_process_family(
+    FAMILY            "G031"
+    ARCH              "ARM"
+    LINKER_SCRIPT     "${CMAKE_SOURCE_DIR}/${MCU_ROOT}/STM32G031GBUX_FLASH.ld"
+    SVD_FILE          "${CMAKE_SOURCE_DIR}/${MCU_ROOT}/STM32G031.svd"
+    OCD_CONFIG_FILE   "${CMAKE_SOURCE_DIR}/${MCU_ROOT}/openocd.cfg"
+    
+    CPU_FLAGS          -mcpu=cortex-m0plus -mthumb
+    
+    SOURCE_DIRS       
+        "${CMAKE_SOURCE_DIR}/${MCU_ROOT}/Startup"
+        "${CMAKE_SOURCE_DIR}/${MCU_ROOT}/Drivers/STM32G0xx_HAL_Driver/Src"
+        "${CMAKE_SOURCE_DIR}/${MCU_ROOT}/Src"
+
+    INCLUDES
+        ${MCU_ROOT}/Inc
+        ${MCU_ROOT}/Drivers/STM32G0xx_HAL_Driver/Inc
+        ${MCU_ROOT}/Drivers/CMSIS/Include
+        ${MCU_ROOT}/Drivers/CMSIS/Device/ST/STM32G0xx/Include
+
+    DEFINES
+        ${MCU_PART}     
+        G031                       
+        USE_FULL_LL_DRIVER
+        HSE_VALUE=8000000
+        HSE_STARTUP_TIMEOUT=100
+        LSE_STARTUP_TIMEOUT=5000
+        LSE_VALUE=32768
+        HSI_VALUE=16000000
+        LSI_VALUE=32000
+        VDD_VALUE=3300
+        DATA_CACHE_ENABLE=1
+        INSTRUCTION_CACHE_ENABLE=0
+        PREFETCH_ENABLE=1
+)
+
+
+################################################################################
+# FILE: cmake/targets/arm/target_l431.cmake
+################################################################################
+
+set(MCU_ROOT "Mcu/l431")
+set(MCU_PART "STM32L431xx")
+
+am32_process_family(
+    FAMILY            "L431"
+    ARCH              "ARM"
+    LINKER_SCRIPT     "${CMAKE_SOURCE_DIR}/${MCU_ROOT}/ldscript.ld"
+    CAN_LINKER_SCRIPT "${CMAKE_SOURCE_DIR}/${MCU_ROOT}/ldscript_CAN.ld"
+    SVD_FILE          "${CMAKE_SOURCE_DIR}/${MCU_ROOT}/STM32L4x1.svd"
+    OCD_CONFIG_FILE   "${CMAKE_SOURCE_DIR}/${MCU_ROOT}/openocd.cfg"
+    
+    CPU_FLAGS
+        -mcpu=cortex-m4 
+        -mthumb
+        -mfloat-abi=hard
+    
+    SOURCE_DIRS       
+        "${CMAKE_SOURCE_DIR}/${MCU_ROOT}/Startup/gcc"
+        "${CMAKE_SOURCE_DIR}/${MCU_ROOT}/Drivers/STM32L4xx_HAL_Driver/Src"
+        "${CMAKE_SOURCE_DIR}/${MCU_ROOT}/Src"
+
+    CAN_SOURCE_DIRS
+        "${CMAKE_SOURCE_DIR}/Src/DroneCAN"
+        "${CMAKE_SOURCE_DIR}/Src/DroneCAN/dsdl_generated/src"
+        "${CMAKE_SOURCE_DIR}/Src/DroneCAN/libcanard"
+        "${CMAKE_SOURCE_DIR}/Src/DroneCAN/libcanard/drivers/stm32"
+
+    INCLUDES
+        "${MCU_ROOT}/Inc"
+        "${MCU_ROOT}/Drivers/STM32L4xx_HAL_Driver/Inc"
+        "${MCU_ROOT}/Drivers/CMSIS/Include"
+        "${MCU_ROOT}/Drivers/CMSIS/Device/ST/STM32L4xx/Include"
+
+    CAN_INCLUDES
+        "${CMAKE_SOURCE_DIR}/Src/DroneCAN"
+        "${CMAKE_SOURCE_DIR}/Src/DroneCAN/libcanard"
+        "${CMAKE_SOURCE_DIR}/Src/DroneCAN/libcanard/drivers/stm32"
+        "${CMAKE_SOURCE_DIR}/Src/DroneCAN/dsdl_generated/include"
+
+    DEFINES
+        ${MCU_PART}
+        L431                        
+        USE_FULL_LL_DRIVER
+        HSE_STARTUP_TIMEOUT=100
+        LSE_STARTUP_TIMEOUT=5000
+        HSI_VALUE=16000000
+        LSI_VALUE=32000
+        VDD_VALUE=3300
+        DATA_CACHE_ENABLE=1
+        INSTRUCTION_CACHE_ENABLE=0
+        PREFETCH_ENABLE=1
+)
+
+
+
+################################################################################
+# FILE: cmake/targets/arm/target_f415.cmake
+################################################################################
+
+set(MCU_ROOT "Mcu/f415")
+set(MCU_PART "AT32F415K8U7_4")
+
+am32_process_family(
+    FAMILY            "F415"
+    ARCH              "ARM"
+    LINKER_SCRIPT     "${CMAKE_SOURCE_DIR}/${MCU_ROOT}/ldscript.ld"
+    CAN_LINKER_SCRIPT "${CMAKE_SOURCE_DIR}/${MCU_ROOT}/ldscript_CAN.ld"
+    SVD_FILE          "${CMAKE_SOURCE_DIR}/${MCU_ROOT}/AT32F415xx_v2.svd"
+    OCD_CONFIG_FILE   "${CMAKE_SOURCE_DIR}/${MCU_ROOT}/openocd.cfg"
+    
+    CPU_FLAGS         -mcpu=cortex-m4 -mthumb
+    
+    # PASS DIRECTORIES, NOT FILES
+    SOURCE_DIRS       
+        "${CMAKE_SOURCE_DIR}/${MCU_ROOT}/Startup"
+        "${CMAKE_SOURCE_DIR}/${MCU_ROOT}/Drivers/drivers/src"
+        "${CMAKE_SOURCE_DIR}/${MCU_ROOT}/Src"
+
+    CAN_SOURCE_DIRS
+        "${CMAKE_SOURCE_DIR}/Src/DroneCAN"
+        "${CMAKE_SOURCE_DIR}/Src/DroneCAN/dsdl_generated/src"
+        "${CMAKE_SOURCE_DIR}/Src/DroneCAN/libcanard"
+
+    INCLUDES
+        ${MCU_ROOT}/Inc
+        ${MCU_ROOT}/Drivers/drivers/inc
+        ${MCU_ROOT}/Drivers/CMSIS/cm4/core_support
+        ${MCU_ROOT}/Drivers/CMSIS/cm4/device_support
+
+    CAN_INCLUDES
+        ${CMAKE_SOURCE_DIR}/Src/DroneCAN
+        ${CMAKE_SOURCE_DIR}/Src/DroneCAN/libcanard
+        ${CMAKE_SOURCE_DIR}/Src/DroneCAN/dsdl_generated/include
+
+    DEFINES 
+        ${MCU_PART} 
+        F415
+        USE_STDPERIPH_DRIVER
+)
+
+################################################################################
+# FILE: cmake/targets/arm/target_g431.cmake
+################################################################################
+
+set(MCU_ROOT "Mcu/g431")
+set(MCU_PART "STM32G431xx")
+
+am32_process_family(
+    FAMILY            "G431"
+    ARCH              "ARM"
+    LINKER_SCRIPT     "${CMAKE_SOURCE_DIR}/${MCU_ROOT}/ldscript.ld"
+    CAN_LINKER_SCRIPT "${CMAKE_SOURCE_DIR}/${MCU_ROOT}/ldscript_CAN.ld"
+    SVD_FILE          "${CMAKE_SOURCE_DIR}/${MCU_ROOT}/STM32G431xx.svd"
+    OCD_CONFIG_FILE   "${CMAKE_SOURCE_DIR}/${MCU_ROOT}/openocd.cfg"
+    
+    CPU_FLAGS         -mcpu=cortex-m4 -mthumb
+    
+    # PASS DIRECTORIES, NOT FILES
+    SOURCE_DIRS       
+        "${CMAKE_SOURCE_DIR}/${MCU_ROOT}/Startup/gcc"
+        "${CMAKE_SOURCE_DIR}/${MCU_ROOT}/Drivers/STM32G4xx_HAL_Driver/Src"
+        "${CMAKE_SOURCE_DIR}/${MCU_ROOT}/Src"
+
+    CAN_SOURCE_DIRS
+        "${CMAKE_SOURCE_DIR}/Src/DroneCAN"
+        "${CMAKE_SOURCE_DIR}/Src/DroneCAN/dsdl_generated/src"
+        "${CMAKE_SOURCE_DIR}/Src/DroneCAN/libcanard"
+        "${CMAKE_SOURCE_DIR}/Src/DroneCAN/libcanard/drivers/stm32"
+
+    INCLUDES
+        ${MCU_ROOT}/Inc
+        ${MCU_ROOT}/Drivers/STM32G4xx_HAL_Driver/Inc
+        ${MCU_ROOT}/Drivers/CMSIS/Include
+        ${MCU_ROOT}/Drivers/CMSIS/Device/ST/STM32G4xx/Include
+
+    CAN_INCLUDES
+        ${CMAKE_SOURCE_DIR}/Src/DroneCAN
+        ${CMAKE_SOURCE_DIR}/Src/DroneCAN/libcanard
+        ${CMAKE_SOURCE_DIR}/Src/DroneCAN/libcanard/drivers/stm32
+        ${CMAKE_SOURCE_DIR}/Src/DroneCAN/dsdl_generated/include
+
+    DEFINES
+        ${MCU_PART}
+        G431                        
+        USE_FULL_LL_DRIVER
+        HSE_VALUE=8000000
+        PREFETCH_ENABLE=1
+)
+
+
+
+################################################################################
+# FILE: cmake/targets/arm/target_e230.cmake
+################################################################################
+
+set(MCU_ROOT "Mcu/e230")
+set(MCU_PART "GD32E230")
+
+am32_process_family(
+    FAMILY            "E230"
+    ARCH              "ARM"
+    LINKER_SCRIPT     "${CMAKE_SOURCE_DIR}/${MCU_ROOT}/GD32E230K8_FLASH.ld"
+    SVD_FILE          "${CMAKE_SOURCE_DIR}/${MCU_ROOT}/GD32E230.svd"
+    OCD_CONFIG_FILE   "${CMAKE_SOURCE_DIR}/${MCU_ROOT}/openocd.cfg"
+    
+    CPU_FLAGS         -mcpu=cortex-m23 -mthumb -mfloat-abi=soft
+    
+    # PASS DIRECTORIES, NOT FILES
+    SOURCE_DIRS       
+        "${CMAKE_SOURCE_DIR}/${MCU_ROOT}/Drivers/CMSIS/Source"
+        "${CMAKE_SOURCE_DIR}/${MCU_ROOT}/Drivers/GD32E23x_standard_peripheral/Source"
+        "${CMAKE_SOURCE_DIR}/${MCU_ROOT}/Startup"
+        "${CMAKE_SOURCE_DIR}/${MCU_ROOT}/Src"
+
+    INCLUDES
+        ${MCU_ROOT}/Inc
+        ${MCU_ROOT}/Drivers/CMSIS/Include
+        ${MCU_ROOT}/Drivers/CMSIS/Core/Include
+        ${MCU_ROOT}/Drivers/GD32E23x_standard_peripheral/Include
+
+    DEFINES     
+        ${MCU_PART}
+        E230
+        USE_STDPERIPH_DRIVER
+)
+
+
+################################################################################
+# FILE: cmake/targets/wch_riscv/target_v203.cmake
+################################################################################
+
+set(MCU_ROOT "Mcu/v203")
+set(MCU_PART "CH32V203")
+
+am32_process_family(
+    FAMILY            "V203"
+    ARCH              "WCH_RISCV"
+    LINKER_SCRIPT     "${CMAKE_SOURCE_DIR}/${MCU_ROOT}/Link.ld"
+    SVD_FILE          "${CMAKE_SOURCE_DIR}/${MCU_ROOT}/CH32V203xx.svd"
+    OCD_CONFIG_FILE   "${CMAKE_SOURCE_DIR}/${MCU_ROOT}/openocd.cfg"
+    
+    CPU_FLAGS
+        -march=rv32imac 
+        -mabi=ilp32 
+        -msmall-data-limit=8 
+        -msave-restore 
+        -fmessage-length=0 
+        -ffunction-sections 
+        -fdata-sections 
+        -fno-common 
+        -nostartfiles
+    
+    # PASS DIRECTORIES, NOT FILES
+    SOURCE_DIRS       
+        "${CMAKE_SOURCE_DIR}/${MCU_ROOT}/Startup"
+        "${CMAKE_SOURCE_DIR}/${MCU_ROOT}/Drivers/Core"
+        "${CMAKE_SOURCE_DIR}/${MCU_ROOT}/Drivers/Peripheral/src"
+        "${CMAKE_SOURCE_DIR}/${MCU_ROOT}/Drivers/Debug"
+        "${CMAKE_SOURCE_DIR}/${MCU_ROOT}/Src"
+
+    INCLUDES
+        ${MCU_ROOT}/Inc
+        ${MCU_ROOT}/Drivers/Peripheral/inc
+        ${MCU_ROOT}/Drivers/Core
+        ${MCU_ROOT}/Drivers/Debug
+
+    DEFINES     
+        ${MCU_PART}
+        V230
+        MCU_FLASH_START=0x08000000
+)
+
+
+################################################################################
+# FILE: cmake/modules/TargetUtils.cmake
+################################################################################
+
+# ==============================================================================
+# UTILITIES: Helpers for File finding and Text Parsing
+# ==============================================================================
+
+function(get_target_boards OUTPUT_VAR MCU_SUFFIX)
+    set(BOARD_LIST "")
+    set(TARGETS_FILE "${CMAKE_SOURCE_DIR}/Inc/targets.h")
+    set_property(DIRECTORY APPEND PROPERTY CMAKE_CONFIGURE_DEPENDS "${TARGETS_FILE}")
+
+    if(NOT EXISTS "${TARGETS_FILE}")
+        return()
+    endif()
+
+    file(READ "${TARGETS_FILE}" FILE_CONTENT)
+    string(REPLACE ";" "\\;" FILE_CONTENT "${FILE_CONTENT}")
+    string(REPLACE "\n" ";" FILE_LINES "${FILE_CONTENT}")
+
+    foreach(LINE ${FILE_LINES})
+        if("${LINE}" MATCHES "#define[ \t]+FILE_NAME" AND NOT "${LINE}" MATCHES "^[ \t]*//")
+            if("${LINE}" MATCHES "_${MCU_SUFFIX}")
+                string(REGEX MATCH "\"([^\"]+)\"" MATCHED_QUOTES "${LINE}")
+                if(CMAKE_MATCH_1)
+                    list(APPEND BOARD_LIST "${CMAKE_MATCH_1}")
+                endif()
+            endif()
+        endif()
+    endforeach()
+    set(${OUTPUT_VAR} "${BOARD_LIST}" PARENT_SCOPE)
+endfunction()
+
+
+# ------------------------------------------------------------------------------
+# MACRO: Find Linker Scripts
+# ------------------------------------------------------------------------------
+macro(am32_find_linker_scripts VAR_NORMAL VAR_CAN ROOT_DIR)
+    file(GLOB _ALL_LDS "${CMAKE_SOURCE_DIR}/${ROOT_DIR}/*.ld")
+    
+    # Standard Script (prefer ldscript.ld, else first non-CAN)
+    list(FIND _ALL_LDS "${CMAKE_SOURCE_DIR}/${ROOT_DIR}/ldscript.ld" _STD_IDX)
+    if(_STD_IDX GREATER -1)
+        list(GET _ALL_LDS ${_STD_IDX} ${VAR_NORMAL})
+    else()
+        foreach(_LD ${_ALL_LDS})
+            if(NOT "${_LD}" MATCHES "_CAN.ld$")
+                set(${VAR_NORMAL} "${_LD}")
+                break()
+            endif()
+        endforeach()
+    endif()
+
+    if(NOT ${VAR_NORMAL})
+        message(FATAL_ERROR "No Linker Script found in ${ROOT_DIR}")
+    endif()
+
+    # CAN Script
+    set(_CAN_CANDIDATE "${CMAKE_SOURCE_DIR}/${ROOT_DIR}/ldscript_CAN.ld")
+    if(EXISTS "${_CAN_CANDIDATE}")
+        set(${VAR_CAN} "${_CAN_CANDIDATE}")
+    else()
+        set(${VAR_CAN} "")
+    endif()
+endmacro()
+
+# ------------------------------------------------------------------------------
+# INTERNAL HELPER: Add Sources From Directories
+# ------------------------------------------------------------------------------
+macro(_am32_add_sources_from_dirs OUTPUT_VAR DIR_LIST)
+    foreach(DIR ${DIR_LIST})
+        file(GLOB TEMP_SOURCES "${DIR}/*.c")
+        list(APPEND ${OUTPUT_VAR} ${TEMP_SOURCES})
+        file(GLOB TEMP_ASM "${DIR}/*.s" "${DIR}/*.S")
+        list(APPEND ${OUTPUT_VAR} ${TEMP_ASM})
+    endforeach()
+endmacro()
+
+################################################################################
+# FILE: cmake/modules/TargetFactory.cmake
+################################################################################
+
+# ==============================================================================
+# MODULE: TargetFactory
+# ==============================================================================
+include(TargetUtils)
+
+if(NOT Python3_EXECUTABLE)
+    find_package(Python3 REQUIRED COMPONENTS Interpreter)
+endif()
+
+# Find Common Sources ONCE for the whole project
+# These files (Src/*.c) are used by every single target, so we shouldn't scan disk 500 times.
+file(GLOB AM32_COMMON_SOURCES "Src/*.c" "Src/*.s" "Src/*.S")
+set(AM32_COMMON_INCLUDES Inc)
+
+# ------------------------------------------------------------------------------
+# MACRO: Process Family Targets (THE MAIN ITERATOR)
+# ------------------------------------------------------------------------------
+macro(am32_process_family)
+    set(options "")
+    # Added LINKER_SCRIPT and CAN_LINKER_SCRIPT back as required/optional arguments
+    set(oneValueArgs FAMILY ARCH LINKER_SCRIPT CAN_LINKER_SCRIPT SVD_FILE OCD_CONFIG_FILE) 
+    set(multiValueArgs SOURCE_DIRS CAN_SOURCE_DIRS INCLUDES CAN_INCLUDES DEFINES CPU_FLAGS)
+
+    cmake_parse_arguments(ARG "${options}" "${oneValueArgs}" "${multiValueArgs}" ${ARGN})
+
+    # 1. Expand Directories to Source Files (Here, once per family)
+    set(FAMILY_SOURCES "")
+    _am32_add_sources_from_dirs(FAMILY_SOURCES "${ARG_SOURCE_DIRS}")
+
+    set(FAMILY_CAN_SOURCES "")
+    _am32_add_sources_from_dirs(FAMILY_CAN_SOURCES "${ARG_CAN_SOURCE_DIRS}")
+
+    # 2. Get Boards
+    get_target_boards(BOARD_LIST "${ARG_FAMILY}")
+    message(STATUS "[${ARG_FAMILY}] Generating targets for: ${BOARD_LIST}")
+
+    foreach(BOARD_NAME ${BOARD_LIST})
+        if("${BOARD_NAME}" IN_LIST TARGET_SKIP_LIST)
+            message(STATUS "[${ARG_FAMILY}] Skipping broken target: ${BOARD_NAME}")
+            continue()
+        endif()
+
+        add_am32_target(
+            BOARD_ID          "${BOARD_NAME}"
+            MCU_FAMILY        "${ARG_FAMILY}"
+            ARCH              "${ARG_ARCH}"
+            
+            LINKER_SCRIPT     "${ARG_LINKER_SCRIPT}"
+            CAN_LINKER_SCRIPT "${ARG_CAN_LINKER_SCRIPT}"
+
+            SVD_FILE          "${ARG_SVD_FILE}"
+            OCD_CONFIG_FILE   "${ARG_OCD_CONFIG_FILE}"
+            CPU_FLAGS         ${ARG_CPU_FLAGS}
+            SOURCES           ${FAMILY_SOURCES}      # Pass expanded files
+            CAN_SOURCES       ${FAMILY_CAN_SOURCES}  # Pass expanded files
+            INCLUDES          ${ARG_INCLUDES}
+            CAN_INCLUDES      ${ARG_CAN_INCLUDES}
+            DEFINES           ${ARG_DEFINES} ${BOARD_NAME}
+        )
+    endforeach()
+endmacro()
+
+# ------------------------------------------------------------------------------
+# FUNCTION: add_am32_target (THE BUILDER)
+# ------------------------------------------------------------------------------
+function(add_am32_target)
+    cmake_parse_arguments(ARG "" "BOARD_ID;MCU_FAMILY;LINKER_SCRIPT;CAN_LINKER_SCRIPT;ARCH;SVD_FILE;OCD_CONFIG_FILE" "DEFINES;INCLUDES;SOURCES;CAN_SOURCES;CAN_INCLUDES;CPU_FLAGS" ${ARGN})
+
+    if(NOT "${ARG_ARCH}" STREQUAL "${ARCH}")
+        return()
+    endif()
+
+    # Naming
+    if(ARG_BOARD_ID MATCHES "^AM32_")
+        set(LOGICAL_TARGET "${ARG_BOARD_ID}")
+    else()
+        set(LOGICAL_TARGET "AM32_${ARG_BOARD_ID}")
+    endif()
+
+    set(OUTPUT_FILENAME "${LOGICAL_TARGET}_${FIRMWARE_VERSION}")
+    set(ELF_FILE "${OUTPUT_FILENAME}.elf")
+
+    # Sources
+    set(ALL_SOURCES ${AM32_COMMON_SOURCES} ${ARG_SOURCES})
+    set(IS_CAN_TARGET FALSE)
+    
+    if(LOGICAL_TARGET MATCHES "_CAN")
+        set(IS_CAN_TARGET TRUE)
+        list(APPEND ALL_SOURCES ${ARG_CAN_SOURCES})
+    endif()
+
+    add_executable(${LOGICAL_TARGET} ${ALL_SOURCES})
+    set_target_properties(${LOGICAL_TARGET} PROPERTIES OUTPUT_NAME "${OUTPUT_FILENAME}" SUFFIX ".elf")
+
+    # Compiler Setup
+    set(COMMON_COMPILE_FLAGS
+        -fsingle-precision-constant -fomit-frame-pointer -ffast-math -g3 -O3
+        -ffunction-sections -Wall -Wundef -Wextra -Werror -Wno-unused-parameter
+        -Wno-stringop-truncation
+        # Maps the absolute source directory to "." in debug symbols. Strips off local file system paths - reproducible builds
+        -fdebug-prefix-map="${CMAKE_SOURCE_DIR}=."
+        # Allow to set __DATE__ & __TIME__ - used in VersionUtils.cmake
+        -Wno-builtin-macro-redefined 
+    )
+    set(COMMON_LINK_FLAGS --specs=nosys.specs --specs=nano.specs -lnosys -Wl,--gc-sections -Wl,--print-memory-usage)
+
+    target_compile_definitions(${LOGICAL_TARGET} PRIVATE 
+        AM32_MCU="${ARG_MCU_FAMILY}"
+        ${ARG_DEFINES}
+        FIRMWARE_GIT_HASH="${FIRMWARE_GIT_HASH}"
+        FIRMWARE_VERSION="${FIRMWARE_VERSION}"
+    )
+    target_compile_options(${LOGICAL_TARGET} PRIVATE ${ARG_CPU_FLAGS} ${COMMON_COMPILE_FLAGS})
+
+    # Linker
+    if(IS_CAN_TARGET)
+        if(ARG_CAN_LINKER_SCRIPT)
+            set(FINAL_LDSCRIPT ${ARG_CAN_LINKER_SCRIPT})
+        else()
+            # Fail if the Target File didn't provide a CAN script
+            message(FATAL_ERROR "[${LOGICAL_TARGET}] CAN target requested, but CAN_LINKER_SCRIPT was not defined in target_${ARG_MCU_FAMILY}.cmake!")
+        endif()
+    else()
+        if(ARG_LINKER_SCRIPT)
+            set(FINAL_LDSCRIPT ${ARG_LINKER_SCRIPT})
+        else()
+             message(FATAL_ERROR "[${LOGICAL_TARGET}] LINKER_SCRIPT was not defined in target_${ARG_MCU_FAMILY}.cmake!")
+        endif()
+    endif()
+
+    target_link_options(${LOGICAL_TARGET} PRIVATE ${ARG_CPU_FLAGS} ${COMMON_LINK_FLAGS} -T${FINAL_LDSCRIPT} "-Wl,-Map=${OUTPUT_FILENAME}.map")
+    target_include_directories(${LOGICAL_TARGET} PRIVATE ${AM32_COMMON_INCLUDES} ${ARG_INCLUDES} $<$<BOOL:${IS_CAN_TARGET}>:${ARG_CAN_INCLUDES}>)
+
+    # Post-Build
+    set(BANNER_MSG "================ [ ${OUTPUT_FILENAME} ] ================")
+
+    if(IS_CAN_TARGET)
+        add_custom_command(TARGET ${LOGICAL_TARGET} POST_BUILD
+            COMMAND ${CMAKE_OBJCOPY} -O binary ${ELF_FILE} ${OUTPUT_FILENAME}.bin
+            COMMAND Python3::Interpreter ${CMAKE_SOURCE_DIR}/Src/DroneCAN/set_app_signature.py ${OUTPUT_FILENAME}.bin ${ELF_FILE}
+            COMMAND ${CMAKE_OBJCOPY} ${ELF_FILE} -O ihex ${OUTPUT_FILENAME}.hex
+
+            COMMAND ${CMAKE_COMMAND} -E echo "${BANNER_MSG}"
+            COMMAND ${CMAKE_SIZE} ${ELF_FILE}
+        )
+    else()
+        add_custom_command(TARGET ${LOGICAL_TARGET} POST_BUILD
+            COMMAND ${CMAKE_OBJCOPY} -O binary ${ELF_FILE} ${OUTPUT_FILENAME}.bin
+            COMMAND ${CMAKE_OBJCOPY} ${ELF_FILE} -O ihex ${OUTPUT_FILENAME}.hex
+
+            COMMAND ${CMAKE_COMMAND} -E echo "${BANNER_MSG}"
+            COMMAND ${CMAKE_SIZE} ${ELF_FILE}
+        )
+    endif()
+
+    # Flash Target
+    if(ARG_OCD_CONFIG_FILE)
+        if(CMAKE_HOST_WIN32)
+            set(EXE_EXT ".exe")
+        else()
+            set(EXE_EXT "")
+        endif()
+
+        # We manually construct the path because we know where manage_tools.cmake put it
+        if(ARG_ARCH STREQUAL "WCH_RISCV")
+            set(TOOL_OPENOCD "${CMAKE_SOURCE_DIR}/tools/openocd-wch-riscv/bin/openocd${EXE_EXT}")
+        else()
+            set(TOOL_OPENOCD "${CMAKE_SOURCE_DIR}/tools/openocd-arm/bin/openocd${EXE_EXT}")
+        endif()
+
+        add_custom_target(flash_${LOGICAL_TARGET}
+            COMMAND ${TOOL_OPENOCD} -f ${ARG_OCD_CONFIG_FILE} -c "program ${ELF_FILE} verify reset exit"
+            DEPENDS ${LOGICAL_TARGET}
+            WORKING_DIRECTORY ${CMAKE_CURRENT_BINARY_DIR}
+            USES_TERMINAL
+            COMMENT "Flashing ${LOGICAL_TARGET}..."
+        )
+    endif()
+endfunction()
+
+################################################################################
+# FILE: cmake/modules/VersionUtils.cmake
+################################################################################
+
+# ==============================================================================
+# MODULE: VersionUtils
+# ==============================================================================
+set(VERSION_FILE "${CMAKE_SOURCE_DIR}/Inc/version.h")
+
+# WATCH FOR HEADER CHANGES
+set_property(DIRECTORY APPEND PROPERTY CMAKE_CONFIGURE_DEPENDS "${VERSION_FILE}")
+
+# EXTRACT VERSION NUMBERS
+if(EXISTS "${VERSION_FILE}")
+    file(STRINGS "${VERSION_FILE}" V_MAJ_LINE REGEX "^#define[ \t]+VERSION_MAJOR[ \t]+([0-9]+)")
+    string(REGEX REPLACE "^#define[ \t]+VERSION_MAJOR[ \t]+([0-9]+).*" "\\1" V_MAJ "${V_MAJ_LINE}")
+
+    file(STRINGS "${VERSION_FILE}" V_MIN_LINE REGEX "^#define[ \t]+VERSION_MINOR[ \t]+([0-9]+)")
+    string(REGEX REPLACE "^#define[ \t]+VERSION_MINOR[ \t]+([0-9]+).*" "\\1" V_MIN "${V_MIN_LINE}")
+
+    set(FIRMWARE_VERSION "${V_MAJ}.${V_MIN}")
+else()
+    set(FIRMWARE_VERSION "0.00")
+endif()
+
+# GIT INFO & SMART DATING
+find_package(Git)
+set(IS_DIRTY FALSE)
+
+if(GIT_FOUND AND EXISTS "${CMAKE_SOURCE_DIR}/.git")
+    # A. Git appends '-dirty' if uncommitted changes exist
+    execute_process(COMMAND ${GIT_EXECUTABLE} describe --always --dirty 
+        OUTPUT_VARIABLE GIT_HASH 
+        OUTPUT_STRIP_TRAILING_WHITESPACE
+    )
+    if(GIT_HASH MATCHES "-dirty$")
+        set(IS_DIRTY TRUE)
+    endif()
+
+    # C. Determine Date/Time Source
+    if(IS_DIRTY)
+        # Dirty Build -> Use System Time (Shows "Now")
+        message(STATUS "[Version] Dirty build detected. Using system time.")
+        string(TIMESTAMP REPRO_DATE "%b %d %Y")
+        string(TIMESTAMP REPRO_TIME "%H:%M:%S")
+    else()
+        # Clean Build -> Use Commit Time (Reproducible)
+        execute_process(COMMAND ${GIT_EXECUTABLE} log -1 --format=%cd --date=format:"%b %d %Y"
+            OUTPUT_VARIABLE REPRO_DATE
+            OUTPUT_STRIP_TRAILING_WHITESPACE
+        )
+        execute_process(COMMAND ${GIT_EXECUTABLE} log -1 --format=%cd --date=format:"%H:%M:%S"
+            OUTPUT_VARIABLE REPRO_TIME
+            OUTPUT_STRIP_TRAILING_WHITESPACE
+        )
+    endif()
+else()
+    # No Git -> Use System Time
+    string(TIMESTAMP REPRO_DATE "%b %d %Y")
+    string(TIMESTAMP REPRO_TIME "%H:%M:%S")
+endif()
+
+# 4. EXPORT DEFINITIONS
+# Overwrites standard macros. Safe because -Wno-builtin-macro-redefined is in flags.
+add_compile_definitions(
+    "__DATE__=\"${REPRO_DATE}\""
+    "__TIME__=\"${REPRO_TIME}\""
+)
+
+# How this behaves now:
+# Clean Build:
+#   Hash: a1b2c3d
+#   Date: Jan 01 2024 (The day you actually committed the code).
+#   Result: Exact binary reproducibility. Anyone building this commit gets the exact same bytes.
+#
+# Dirty Build (Uncommitted changes):
+#   Hash: a1b2c3d-dirty
+#   Date: Jan 18 2026 (Today/Now).
+#   Result: The date correctly tells you "This is a custom modification made on this day," preventing confusion with the official commit.
+
+################################################################################
+# FILE: cmake/modules/VscodeGenerator.cmake
+################################################################################
+
+function(am32_generate_launch_json)
+    set(VSCODE_DIR "${CMAKE_SOURCE_DIR}/.vscode")
+    file(MAKE_DIRECTORY "${VSCODE_DIR}")
+    
+    if(CMAKE_HOST_WIN32)
+        set(EXT ".exe")
+    else()
+        set(EXT "")
+    endif()
+
+    # Tool Definitions
+    set(ARM_GDB   "${CMAKE_SOURCE_DIR}/tools/gcc-arm/bin/arm-none-eabi-gdb${EXT}")
+    set(ARM_OCD   "${CMAKE_SOURCE_DIR}/tools/openocd-arm/bin/openocd${EXT}")
+    
+    # Pointing to the WCH specific directories
+    set(WCH_RISCV_GDB "${CMAKE_SOURCE_DIR}/tools/gcc-wch-riscv/bin/riscv-none-embed-gdb${EXT}")
+    set(WCH_RISCV_OCD "${CMAKE_SOURCE_DIR}/tools/openocd-wch-riscv/bin/openocd${EXT}")
+
+    set(CONFIGS "")
+
+    macro(add_debug_entry NAME TARGET_CFG SVD_FILE IS_WCH_RISCV)
+        if(${IS_WCH_RISCV})
+            set(GDB_PATH "${WCH_RISCV_GDB}")
+            set(OCD_PATH "${WCH_RISCV_OCD}")
+        else()
+            set(GDB_PATH "${ARM_GDB}")
+            set(OCD_PATH "${ARM_OCD}")
+        endif()
+
+        string(APPEND CONFIGS "
+        {
+            \"name\": \"${NAME}\",
+            \"type\": \"cortex-debug\",
+            \"request\": \"launch\",
+            \"servertype\": \"openocd\",
+            \"cwd\": \"\${workspaceFolder}\",
+            \"executable\": \"\${command:cmake.launchTargetPath}\",
+            \"serverpath\": \"${OCD_PATH}\",
+            \"gdbPath\": \"${GDB_PATH}\",
+            \"configFiles\": [ \"\${workspaceFolder}/${TARGET_CFG}\" ],
+            \"svdFile\": \"\${workspaceFolder}/${SVD_FILE}\",
+            \"runToEntryPoint\": \"main\",
+            \"showDevDebugOutput\": \"none\"
+        },")
+    endmacro()
+
+    # --- Add The Families ---
+    add_debug_entry("Debug GD32 E230"   "${CMAKE_SOURCE_DIR}/Mcu/e230/openocd.cfg" "Mcu/e230/GD32E230.svd"      FALSE)
+    add_debug_entry("Debug STM32 F031"  "${CMAKE_SOURCE_DIR}/Mcu/f031/openocd.cfg" "Mcu/f031/STM32F0x1.svd"     FALSE)
+    add_debug_entry("Debug STM32 F051"  "${CMAKE_SOURCE_DIR}/Mcu/f051/openocd.cfg" "Mcu/f051/STM32F0x1.svd"     FALSE)
+    add_debug_entry("Debug AT32 F415"   "${CMAKE_SOURCE_DIR}/Mcu/f415/openocd.cfg" "Mcu/f415/AT32F415xx_v2.svd" FALSE)
+    add_debug_entry("Debug AT32 F421"   "${CMAKE_SOURCE_DIR}/Mcu/f421/openocd.cfg" "Mcu/f421/AT32F421xx_v2.svd" FALSE)
+    add_debug_entry("Debug STM32 G031"  "${CMAKE_SOURCE_DIR}/Mcu/g031/openocd.cfg" "Mcu/g031/STM32F0x1.svd"     FALSE)
+    add_debug_entry("Debug STM32 G071"  "${CMAKE_SOURCE_DIR}/Mcu/g071/openocd.cfg" "Mcu/g031/STM32G071.svd"     FALSE)
+    add_debug_entry("Debug STM32 G431"  "${CMAKE_SOURCE_DIR}/Mcu/g431/openocd.cfg" "Mcu/g431/STM32G431xx.svd"   FALSE)
+    add_debug_entry("Debug STM32 L431"  "${CMAKE_SOURCE_DIR}/Mcu/l431/openocd.cfg" "Mcu/l431/STM32L4x1.svd"     FALSE)
+
+    add_debug_entry("Debug CH32V203 (WCH RISC-V)"  "${CMAKE_SOURCE_DIR}/Mcu/v203/openocd.cfg" "Mcu/v203/CH32V203xx.svd" TRUE)
+
+    string(REGEX REPLACE ",$" "" CONFIGS "${CONFIGS}")
+
+    set(FINAL_JSON "{
+    \"version\": \"0.2.0\",
+    \"configurations\": [${CONFIGS}
+    ]
+}")
+
+    file(WRITE "${VSCODE_DIR}/launch.json" "${FINAL_JSON}")
+    message(STATUS "[VSCode] Generated .vscode/launch.json")
+endfunction()
+
+################################################################################
+# FILE: cmake/toolchains/wch-riscv-none-embed.cmake
+################################################################################
+
+set(CMAKE_SYSTEM_NAME Generic)
+set(CMAKE_SYSTEM_PROCESSOR riscv)
+
+set(CMAKE_TRY_COMPILE_TARGET_TYPE STATIC_LIBRARY)
+
+get_filename_component(PROJECT_ROOT "${CMAKE_CURRENT_LIST_DIR}/../.." ABSOLUTE)
+# FIX: Now pointing to the WCH specific directory
+set(MY_GCC_ROOT "${PROJECT_ROOT}/tools/gcc-wch-riscv")
+
+if(EXISTS "${MY_GCC_ROOT}")
+    set(CMAKE_PROGRAM_PATH ${MY_GCC_ROOT}/bin ${CMAKE_PROGRAM_PATH})
+else()
+    message(WARNING "WCH RISC-V GCC not found at ${MY_GCC_ROOT}. Build might fail.")
+endif()
+
+find_program(CMAKE_C_COMPILER NAMES riscv-none-elf-gcc riscv-none-embed-gcc)
+find_program(CMAKE_CXX_COMPILER NAMES riscv-none-elf-g++ riscv-none-embed-g++)
+find_program(CMAKE_ASM_COMPILER NAMES riscv-none-elf-gcc riscv-none-embed-gcc)
+find_program(CMAKE_OBJCOPY NAMES riscv-none-elf-objcopy riscv-none-embed-objcopy)
+find_program(CMAKE_SIZE NAMES riscv-none-elf-size riscv-none-embed-size)
+
+set(CMAKE_FIND_ROOT_PATH_MODE_PROGRAM NEVER)
+set(CMAKE_FIND_ROOT_PATH_MODE_LIBRARY ONLY)
+set(CMAKE_FIND_ROOT_PATH_MODE_INCLUDE ONLY)
+
+# Sysroot for IntelliSense
+if(CMAKE_C_COMPILER)
+    execute_process(
+        COMMAND ${CMAKE_C_COMPILER} -print-sysroot
+        OUTPUT_VARIABLE WCH_RISCV_SYSROOT
+        OUTPUT_STRIP_TRAILING_WHITESPACE
+    )
+    set(CMAKE_SYSROOT "${WCH_RISCV_SYSROOT}")
+endif()
+
+################################################################################
+# FILE: cmake/toolchains/arm-none-eabi.cmake
+################################################################################
+
+set(CMAKE_SYSTEM_NAME Generic)
+set(CMAKE_SYSTEM_PROCESSOR arm)
+
+# Skip Linker Check (Fixes the "exit undefined" error)
+set(CMAKE_TRY_COMPILE_TARGET_TYPE STATIC_LIBRARY)
+
+# Point to the tools (Relative to this file)
+get_filename_component(PROJECT_ROOT "${CMAKE_CURRENT_LIST_DIR}/../.." ABSOLUTE)
+set(MY_GCC_ROOT "${PROJECT_ROOT}/tools/gcc-arm")
+
+if(EXISTS "${MY_GCC_ROOT}")
+    set(CMAKE_PROGRAM_PATH ${MY_GCC_ROOT}/bin ${CMAKE_PROGRAM_PATH})
+else()
+    message(WARNING "ARM GCC not found at ${MY_GCC_ROOT}. Build might fail.")
+endif()
+
+# Find Compilers
+find_program(CMAKE_C_COMPILER arm-none-eabi-gcc)
+find_program(CMAKE_CXX_COMPILER arm-none-eabi-g++)
+find_program(CMAKE_ASM_COMPILER arm-none-eabi-gcc)
+find_program(CMAKE_OBJCOPY arm-none-eabi-objcopy)
+find_program(CMAKE_SIZE arm-none-eabi-size)
+
+# Lock down search modes
+set(CMAKE_FIND_ROOT_PATH_MODE_PROGRAM NEVER)
+set(CMAKE_FIND_ROOT_PATH_MODE_LIBRARY ONLY)
+set(CMAKE_FIND_ROOT_PATH_MODE_INCLUDE ONLY)
+
+# Set SysRoot for Intellisense
+if(CMAKE_C_COMPILER)
+    execute_process(
+        COMMAND ${CMAKE_C_COMPILER} -print-sysroot
+        OUTPUT_VARIABLE ARM_SYSROOT
+        OUTPUT_STRIP_TRAILING_WHITESPACE
+    )
+    # Setting this variable makes CMake add --sysroot to all compile commands automatically
+    set(CMAKE_SYSROOT "${ARM_SYSROOT}")
+endif()
+
+
