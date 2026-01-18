@@ -32,6 +32,8 @@ if(NOT EXISTS "${ARM_GCC_DIR}")
     if(EXTRACTED)
         file(RENAME "${EXTRACTED}" "${ARM_GCC_DIR}")
     endif()
+else()
+    message(STATUS "[Tools] ARM GCC present.")
 endif()
 
 # 3. ARM OPENOCD (xPack)
@@ -59,6 +61,8 @@ if(NOT EXISTS "${ARM_OPENOCD_DIR}")
     if(XP_EXTRACTED)
         file(RENAME "${XP_EXTRACTED}" "${ARM_OPENOCD_DIR}")
     endif()
+else()
+    message(STATUS "[Tools] ARM OpenOCD present.")
 endif()
 
 # ==============================================================================
