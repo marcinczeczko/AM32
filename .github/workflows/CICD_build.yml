@@ -29,6 +29,8 @@ jobs:
         key: ${{ runner.os }}-am32-tools-${{ hashFiles('cmake/manage_tools.cmake') }}
 
     # --- Build Steps ---
+    # manage_tools.cmake runs automatically during configure
+    
     - name: Configure & Build ARM
       run: |
         cmake --preset arm
