@@ -4,11 +4,10 @@
 cmake_minimum_required(VERSION 3.20)
 
 # Not buildable targets - should be skipped during build process
-set(TARGET_SKIP_LIST "")
+set(TARGET_SKIP_LIST)
 
 # Release Skip List (Valid targets, but not for public release)
-set(TARGET_RELEASE_SKIP_LIST
-)
+set(TARGET_RELEASE_SKIP_LIST)
 
 include(cmake/manage_tools.cmake)
 

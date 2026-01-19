@@ -9,95 +9,74 @@ on:
 jobs:
   # -----------------------------------------------------------------------------
   # JOB 1: MATRIX GENERATOR
+  # Queries CMake to see which targets are valid and active.
   # -----------------------------------------------------------------------------
-  setup-matrix:               
-    runs-on: ubuntu-latest   
+  setup-matrix:
+    runs-on: ubuntu-latest
     outputs:
       matrix: ${{ steps.set-matrix.outputs.matrix }}
     steps:
       - uses: actions/checkout@v4
       
+      # We only need CMake for the query step
+      - name: Install Tools
+        run: sudo apt-get update && sudo apt-get install -y cmake
+
       - name: Generate Target Matrix
         id: set-matrix
         run: |
           python3 - << 'EOF'
-          import re
+          import subprocess
           import json
           import os
 
-          # --- 1. PARSE SKIP LIST FROM CMakeLists.txt ---
-          skip_list = set()
-          try:
-              with open("CMakeLists.txt", "r") as f:
-                  cmake_content = f.read()
-                  # Find content inside set(TARGET_SKIP_LIST ...)
-                  match = re.search(r"set\s*\(\s*TARGET_SKIP_LIST\s+([^)]+)\)", cmake_content, re.DOTALL)
-                  if match:
-                      content = match.group(1)
-                      # Regex to find strings inside quotes
-                      items = re.findall(r'"([^"]*)"', content)
-                      for item in items:
-                          # Normalize: Uppercase for case-insensitive comparison
-                          skip_list.add(item.strip().upper())
-                            
-              print(f"Skipping targets from CMakeLists: {skip_list}")
-          except FileNotFoundError:
-              print("Warning: CMakeLists.txt not found, no skip list loaded.")
+          # Configuration: Define your presets here
+          presets = [
+              {"name": "arm",   "configure": "arm",       "build": "build-arm"},
+              {"name": "riscv", "configure": "wch-riscv", "build": "build-wch"}
+          ]
 
-          # --- 2. PARSE targets.h (Makefile Logic) ---
           targets = []
-          PRESET_ARM = "build-arm"
-          PRESET_RISCV = "build-wch"
+          print("--- Querying CMake for Targets ---")
 
-          # Regex finds: #define FILE_NAME "TargetName"
-          re_filename = re.compile(r'^\s*#define\s+FILE_NAME\s+"([^"]+)"')
-
-          try:
-              with open("Inc/targets.h", "r") as f:
-                  for line in f:
-                      if "DISABLE_BUILD" in line:
-                          continue
-                          
-                      if line.strip().startswith("//"):
-                          continue
-
-                      match = re_filename.search(line)
-                      if match:
-                          board_name_raw = match.group(1)
-                          board_name = board_name_raw.strip()
-
-                          if not board_name: 
-                              continue
-
-                          # Check against CMake skip list
-                          if board_name.upper() in skip_list:
-                              print(f"Skipping {board_name_raw} (found in TARGET_SKIP_LIST)")
-                              continue
-                          
-                          # If name contains _V203 or CH32, assume RISC-V, else ARM
-                          if "_V203" in board_name_raw or "CH32" in board_name_raw: 
-                              preset = PRESET_RISCV
-                              configure = "wch-riscv"
-                          else:
-                              preset = PRESET_ARM
-                              configure = "arm"
+          for p in presets:
+              print(f"Checking preset: {p['name']}...")
+              
+              # 1. Run CMake Configure (Dry Run -N)
+              # This runs all CMake logic (skip lists, validation) without compiling code.
+              cmd = ["cmake", "--preset", p['configure'], "-N"]
+              
+              try:
+                  # Capture both stdout and stderr
+                  result = subprocess.run(cmd, capture_output=True, text=True)
+                  
+                  # 2. Parse Output for our "Beacon"
+                  # We look for lines containing: "TARGET:BOARD_NAME"
+                  for line in result.stdout.splitlines():
+                      if "TARGET:" in line:
+                          parts = line.split("TARGET:")
+                          if len(parts) > 1:
+                              board_name = parts[1].strip()
                               
-                          targets.append({
-                              "name": board_name_raw, 
-                              "configure": configure,
-                              "build_preset": preset
-                          })
-
-          except FileNotFoundError:
-              print("Error: Inc/targets.h not found")
-              exit(1)
+                              # Avoid duplicates if multiple presets somehow print the same target
+                              if not any(t['name'] == board_name for t in targets):
+                                  print(f"Found: {board_name} ({p['name']})")
+                                  targets.append({
+                                      "name": board_name,
+                                      "configure": p['configure'],
+                                      "build_preset": p['build']
+                                  })
+                              
+              except Exception as e:
+                  print(f"Error running CMake for {p['name']}: {e}")
 
           if not targets:
-              print("No targets found!")
+              print("Error: No targets found! Check CMake logs for 'TARGET:' messages.")
               exit(1)
 
+          # 3. Output JSON
           matrix_json = json.dumps({"include": targets})
-          print(f"Generated Matrix for {len(targets)} targets.")
+          print(f"Total Targets: {len(targets)}")
           
           with open(os.environ["GITHUB_OUTPUT"], "a") as f:
               f.write(f"matrix={matrix_json}")
@@ -122,6 +101,7 @@ jobs:
       - name: Install Tools
         run: sudo apt-get update && sudo apt-get install -y ninja-build cmake python3
 
+      # Reuse the cache to speed up tool installation across 50+ jobs
       - name: Restore Tools Cache
         uses: actions/cache@v4
         with:
@@ -132,7 +112,8 @@ jobs:
       - name: Setup toolset
         run: cmake -P cmake/manage_tools.cmake
 
-      # 1. CALCULATE VERSION (Tag or Git Hash)
+      # 1. CALCULATE VERSION 
+      # Tag -> v2.20, Commit -> Short Hash (a1b2c3d)
       - name: Determine Version
         id: version
         run: |
@@ -142,6 +123,7 @@ jobs:
             VERSION=$(git rev-parse --short HEAD)
           fi
           echo "VERSION=$VERSION" >> $GITHUB_ENV
+          echo "Computed version suffix: $VERSION"
 
       - name: Configure
         run: cmake --preset ${{ matrix.configure }}
@@ -150,10 +132,13 @@ jobs:
         run: cmake --build --preset ${{ matrix.build_preset }} --target ${{ matrix.name }}
 
       # 2. RENAME & FLATTEN
-      # Find the CMake output and rename it to AM32_TARGET_VERSION.hex
+      # Finds the CMake output (AM32_TARGET_X.XX.hex)
+      # Renames it to AM32_TARGET_GITHASH.hex for clarity in CI artifacts
       - name: Prepare Artifact
         run: |
           mkdir -p staging
+          
+          # Find the generated hex file
           HEX_FILE=$(find build -name "*.hex" | head -n 1)
           
           if [ -z "$HEX_FILE" ]; then
@@ -161,17 +146,16 @@ jobs:
             exit 1
           fi
           
-          # Construct the filename: AM32_AGFRC_V2_F051_a1b2c3d.hex
+          # New Name: AM32_TARGET_GITHASH.hex
           NEW_NAME="AM32_${{ matrix.name }}_${{ env.VERSION }}.hex"
           
           cp "$HEX_FILE" "staging/$NEW_NAME"
           echo "Prepared: staging/$NEW_NAME"
 
       # 3. UPLOAD
+      # Result: A zip file named AM32_TARGET_VER.hex.zip containing ONE file.
       - name: Upload Artifact
         uses: actions/upload-artifact@v4
         with:
-          # Label in GitHub UI will look like a file
           name: AM32_${{ matrix.name }}_${{ env.VERSION }}.hex
-          # Upload only the hex file from staging to keep zip flat
           path: staging/*.hex

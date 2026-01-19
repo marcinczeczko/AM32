@@ -32,7 +32,6 @@ macro(am32_process_family)
 
     # 2. Get Boards
     get_target_boards(BOARD_LIST "${ARG_FAMILY}")
-    message(STATUS "[${ARG_FAMILY}] Generating targets for: ${BOARD_LIST}")
 
     foreach(BOARD_NAME ${BOARD_LIST})
         if("${BOARD_NAME}" IN_LIST TARGET_SKIP_LIST)
@@ -57,6 +56,8 @@ macro(am32_process_family)
             CAN_INCLUDES      ${ARG_CAN_INCLUDES}
             DEFINES           ${ARG_DEFINES} ${BOARD_NAME}
         )
+
+        message(STATUS "TARGET:${BOARD_NAME}")
     endforeach()
 endmacro()
 
