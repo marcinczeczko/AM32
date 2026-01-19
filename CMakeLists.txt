@@ -4,17 +4,10 @@
 cmake_minimum_required(VERSION 3.20)
 
 # Not buildable targets - should be skipped during build process
-set(TARGET_SKIP_LIST 
-    "DAKEFPV_35A_F415"
-    "CM MINI V3"
-    "SWAP_PB0_PA7"
-    "IFLIGHT_TEST_F4A"
-    "NEUTRON_2_6S_AIO")
+set(TARGET_SKIP_LIST "")
 
 # Release Skip List (Valid targets, but not for public release)
 set(TARGET_RELEASE_SKIP_LIST
-    "MY_PRIVATE_TEST_BOARD"
-    "OBSOLETE_BOARD_V1"
 )
 
 include(cmake/manage_tools.cmake)

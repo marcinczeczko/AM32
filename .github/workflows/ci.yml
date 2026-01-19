@@ -30,29 +30,37 @@ jobs:
           try:
               with open("CMakeLists.txt", "r") as f:
                   cmake_content = f.read()
+                  # Find content inside set(TARGET_SKIP_LIST ...)
                   match = re.search(r"set\s*\(\s*TARGET_SKIP_LIST\s+([^)]+)\)", cmake_content, re.DOTALL)
                   if match:
                       content = match.group(1)
-                      # Find strings inside quotes
+                      # Regex to find strings inside quotes
                       items = re.findall(r'"([^"]*)"', content)
                       for item in items:
-                          # Convert to UPPERCASE for case-insensitive comparison
+                          # Normalize: Uppercase for case-insensitive comparison
                           skip_list.add(item.strip().upper())
                             
               print(f"Skipping targets from CMakeLists: {skip_list}")
           except FileNotFoundError:
               print("Warning: CMakeLists.txt not found, no skip list loaded.")
 
-          # --- 2. PARSE targets.h ---
+          # --- 2. PARSE targets.h (Makefile Logic) ---
           targets = []
           PRESET_ARM = "build-arm"
           PRESET_RISCV = "build-wch"
 
-          re_filename = re.compile(r"^\s*#define\s+FILE_NAME\s+\"([^\"]+)\"")
+          # Regex finds: #define FILE_NAME "TargetName"
+          re_filename = re.compile(r'^\s*#define\s+FILE_NAME\s+"([^"]+)"')
 
           try:
               with open("Inc/targets.h", "r") as f:
                   for line in f:
+                      if "DISABLE_BUILD" in line:
+                          continue
+                          
+                      if line.strip().startswith("//"):
+                          continue
+
                       match = re_filename.search(line)
                       if match:
                           board_name_raw = match.group(1)
@@ -61,12 +69,12 @@ jobs:
                           if not board_name: 
                               continue
 
-                          # Check against skip list using UPPERCASE
+                          # Check against CMake skip list
                           if board_name.upper() in skip_list:
-                              print(f"Skipping {board_name_raw} (found in skip list)")
+                              print(f"Skipping {board_name_raw} (found in TARGET_SKIP_LIST)")
                               continue
                           
-                          # Architecture Logic
+                          # If name contains _V203 or CH32, assume RISC-V, else ARM
                           if "_V203" in board_name_raw or "CH32" in board_name_raw: 
                               preset = PRESET_RISCV
                               configure = "wch-riscv"
@@ -74,7 +82,6 @@ jobs:
                               preset = PRESET_ARM
                               configure = "arm"
                               
-                          # Use raw name for the actual build target command
                           targets.append({
                               "name": board_name_raw, 
                               "configure": configure,
@@ -101,6 +108,7 @@ jobs:
   # -----------------------------------------------------------------------------
   build:
     needs: setup-matrix
+    # Sidebar Name: AM32_TARGETNAME
     name: AM32_${{ matrix.name }}
     runs-on: ubuntu-latest
     strategy:
@@ -124,9 +132,7 @@ jobs:
       - name: Setup toolset
         run: cmake -P cmake/manage_tools.cmake
 
-      # 1. GENERATE VERSION SUFFIX
-      # If it's a tag, use the tag name (v2.20).
-      # If it's a generic commit, use the short Git Hash (7 chars).
+      # 1. CALCULATE VERSION (Tag or Git Hash)
       - name: Determine Version
         id: version
         run: |
@@ -136,7 +142,6 @@ jobs:
             VERSION=$(git rev-parse --short HEAD)
           fi
           echo "VERSION=$VERSION" >> $GITHUB_ENV
-          echo "Computed version suffix: $VERSION"
 
       - name: Configure
         run: cmake --preset ${{ matrix.configure }}
@@ -145,14 +150,10 @@ jobs:
         run: cmake --build --preset ${{ matrix.build_preset }} --target ${{ matrix.name }}
 
       # 2. RENAME & FLATTEN
-      # Find the built hex file (which CMake named AM32_TARGET_X.XX.hex)
-      # Rename it to include the Git Hash for clarity, and move it to a clean folder.
+      # Find the CMake output and rename it to AM32_TARGET_VERSION.hex
       - name: Prepare Artifact
         run: |
           mkdir -p staging
-          
-          # Find the generated hex file (regardless of CMake's internal versioning)
-          # We search in build directories
           HEX_FILE=$(find build -name "*.hex" | head -n 1)
           
           if [ -z "$HEX_FILE" ]; then
@@ -160,17 +161,17 @@ jobs:
             exit 1
           fi
           
-          # New Name: AM32_TARGET_GITHASH.hex
+          # Construct the filename: AM32_AGFRC_V2_F051_a1b2c3d.hex
           NEW_NAME="AM32_${{ matrix.name }}_${{ env.VERSION }}.hex"
           
           cp "$HEX_FILE" "staging/$NEW_NAME"
           echo "Prepared: staging/$NEW_NAME"
 
-      # 3. UPLOAD (Clean Name & Flat Structure)
+      # 3. UPLOAD
       - name: Upload Artifact
         uses: actions/upload-artifact@v4
         with:
-          # This controls the label in the GitHub UI list
-          name: AM32_${{ matrix.name }}_${{ env.VERSION }}
-          # Uploading the file directly (not a wildcard path) flattens the zip
+          # Label in GitHub UI will look like a file
+          name: AM32_${{ matrix.name }}_${{ env.VERSION }}.hex
+          # Upload only the hex file from staging to keep zip flat
           path: staging/*.hex

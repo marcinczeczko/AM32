@@ -16,7 +16,10 @@ function(get_target_boards OUTPUT_VAR MCU_SUFFIX)
     string(REPLACE "\n" ";" FILE_LINES "${FILE_CONTENT}")
 
     foreach(LINE ${FILE_LINES})
-        if("${LINE}" MATCHES "#define[ \t]+FILE_NAME" AND NOT "${LINE}" MATCHES "^[ \t]*//")
+        if("${LINE}" MATCHES "#define[ \t]+FILE_NAME" 
+            AND NOT "${LINE}" MATCHES "^[ \t]*//"
+            AND NOT "${LINE}" MATCHES "DISABLE_BUILD")
+            
             if("${LINE}" MATCHES "_${MCU_SUFFIX}")
                 string(REGEX MATCH "\"([^\"]+)\"" MATCHED_QUOTES "${LINE}")
                 if(CMAKE_MATCH_1)
