@@ -30,15 +30,17 @@ jobs:
           try:
               with open("CMakeLists.txt", "r") as f:
                   cmake_content = f.read()
-                  # Regex finds: set(TARGET_SKIP_LIST "A" "B" ...) across multiple lines
+                  # Find the content inside set(TARGET_SKIP_LIST ...)
                   match = re.search(r"set\s*\(\s*TARGET_SKIP_LIST\s+([^)]+)\)", cmake_content, re.DOTALL)
                   if match:
-                      # Split by whitespace and clean quotes
-                      raw_items = match.group(1).split()
-                      for item in raw_items:
-                          clean_item = item.strip("\"\'") 
-                          if clean_item:
-                              skip_list.add(clean_item)
+                      content = match.group(1)
+                      # FIX: Use regex to find "Quoted Strings" instead of simple split()
+                      # This captures 'Item 1' from "Item 1" "Item 2"
+                      items = re.findall(r'"([^"]*)"', content)
+                      for item in items:
+                          # Normalize: strip whitespace to match easier
+                          skip_list.add(item.strip())
+                          
               print(f"Skipping targets from CMakeLists: {skip_list}")
           except FileNotFoundError:
               print("Warning: CMakeLists.txt not found, no skip list loaded.")
@@ -55,14 +57,22 @@ jobs:
                   for line in f:
                       match = re_filename.search(line)
                       if match:
-                          board_name = match.group(1)
+                          # Get name and strip trailing spaces (e.g. "CM Mini V3  " -> "CM Mini V3")
+                          board_name_raw = match.group(1)
+                          board_name = board_name_raw.strip()
 
-                          if board_name in skip_list:
-                              print(f"{board_name} is skipped")
+                          # Logic to ignore placeholders like "BOARD " 
+                          # (Only ignore if it's literally empty or just a placeholder space)
+                          if not board_name: 
                               continue
 
+                          # Check Skip List
+                          if board_name in skip_list:
+                              print(f"Skipping {board_name_raw} (found in skip list)")
+                              continue
+                          
                           # Architecture Logic
-                          if "_V203" in board_name or "CH32" in board_name: 
+                          if "_V203" in board_name_raw or "CH32" in board_name_raw: 
                               preset = PRESET_RISCV
                               configure = "wch-riscv"
                           else:
@@ -70,7 +80,7 @@ jobs:
                               configure = "arm"
                               
                           targets.append({
-                              "name": board_name,
+                              "name": board_name_raw, # Use the raw name for the build target
                               "configure": configure,
                               "build_preset": preset
                           })
@@ -80,8 +90,8 @@ jobs:
               exit(1)
 
           if not targets:
-               print("No targets found!")
-               exit(1)
+              print("No targets found!")
+              exit(1)
 
           matrix_json = json.dumps({"include": targets})
           print(f"Generated Matrix for {len(targets)} targets.")
