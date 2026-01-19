@@ -72,7 +72,7 @@ function(add_am32_target)
 
     # Naming
     set(LOGICAL_TARGET "${ARG_BOARD_ID}")
-    set(OUTPUT_FILENAME "${LOGICAL_TARGET}_${FIRMWARE_VERSION}")
+    set(OUTPUT_FILENAME "AM32_${LOGICAL_TARGET}_${FIRMWARE_VERSION}")
     set(ELF_FILE "${OUTPUT_FILENAME}.elf")
 
     # Sources

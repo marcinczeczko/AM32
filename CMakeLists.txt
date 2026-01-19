@@ -7,7 +7,7 @@ cmake_minimum_required(VERSION 3.20)
 set(TARGET_SKIP_LIST 
     "DAKEFPV_35A_F415"
     "CM MINI V3"
-    "SWAP_PB0_PB7"
+    "SWAP_PB0_PA7"
     "IFLIGHT_TEST_F4A"
     "NEUTRON_2_6S_AIO")
 
