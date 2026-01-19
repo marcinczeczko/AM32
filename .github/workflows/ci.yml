@@ -49,7 +49,8 @@ jobs:
               # This prevents CMake from erroring out if your specific cross-compiler isn't downloaded yet.
               # Since we use -N (view mode), the compiler architecture doesn't matter, we just need to parse the log.
               cmd = [
-                  "cmake", "--preset", p['configure'], 
+                  "cmake", "--preset", p['configure'],
+                  "-DCMAKE_TOOLCHAIN_FILE=", # this will skip toolchain setting from presets 
                   "-DCMAKE_C_COMPILER=gcc", 
                   "-DCMAKE_ASM_COMPILER=gcc"
               ]
