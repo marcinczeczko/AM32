@@ -30,17 +30,15 @@ jobs:
           try:
               with open("CMakeLists.txt", "r") as f:
                   cmake_content = f.read()
-                  # Find the content inside set(TARGET_SKIP_LIST ...)
                   match = re.search(r"set\s*\(\s*TARGET_SKIP_LIST\s+([^)]+)\)", cmake_content, re.DOTALL)
                   if match:
                       content = match.group(1)
-                      # FIX: Use regex to find "Quoted Strings" instead of simple split()
-                      # This captures 'Item 1' from "Item 1" "Item 2"
+                      # Find strings inside quotes
                       items = re.findall(r'"([^"]*)"', content)
                       for item in items:
-                          # Normalize: strip whitespace to match easier
-                          skip_list.add(item.strip())
-                          
+                          # Convert to UPPERCASE for case-insensitive comparison
+                          skip_list.add(item.strip().upper())
+                            
               print(f"Skipping targets from CMakeLists: {skip_list}")
           except FileNotFoundError:
               print("Warning: CMakeLists.txt not found, no skip list loaded.")
@@ -57,17 +55,14 @@ jobs:
                   for line in f:
                       match = re_filename.search(line)
                       if match:
-                          # Get name and strip trailing spaces (e.g. "CM Mini V3  " -> "CM Mini V3")
                           board_name_raw = match.group(1)
                           board_name = board_name_raw.strip()
 
-                          # Logic to ignore placeholders like "BOARD " 
-                          # (Only ignore if it's literally empty or just a placeholder space)
                           if not board_name: 
                               continue
 
-                          # Check Skip List
-                          if board_name in skip_list:
+                          # Check against skip list using UPPERCASE
+                          if board_name.upper() in skip_list:
                               print(f"Skipping {board_name_raw} (found in skip list)")
                               continue
                           
@@ -79,8 +74,9 @@ jobs:
                               preset = PRESET_ARM
                               configure = "arm"
                               
+                          # Use raw name for the actual build target command
                           targets.append({
-                              "name": board_name_raw, # Use the raw name for the build target
+                              "name": board_name_raw, 
                               "configure": configure,
                               "build_preset": preset
                           })
