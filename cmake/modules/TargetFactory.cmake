@@ -34,8 +34,16 @@ macro(am32_process_family)
     get_target_boards(BOARD_LIST "${ARG_FAMILY}")
 
     foreach(BOARD_NAME ${BOARD_LIST})
+
+        # ALWAYS SKIP: Broken or disabled targets
         if("${BOARD_NAME}" IN_LIST TARGET_SKIP_LIST)
             message(STATUS "[${ARG_FAMILY}] Skipping broken target: ${BOARD_NAME}")
+            continue()
+        endif()
+
+        #  RELEASE SKIP: Private/Test targets (Only if AM32_OFFICIAL_RELEASE is ON)
+        if(AM32_OFFICIAL_RELEASE AND "${BOARD_NAME}" IN_LIST TARGET_RELEASE_SKIP_LIST)
+            message(STATUS "[${ARG_FAMILY}] Skipping non-release target: ${BOARD_NAME}")
             continue()
         endif()
 

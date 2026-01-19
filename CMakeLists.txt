@@ -3,45 +3,25 @@
 # ==============================================================================
 cmake_minimum_required(VERSION 3.20)
 
-# Not buildable targets - should be skipped during build process
-set(TARGET_SKIP_LIST)
+# Official Release Mode: If ON, targets in TARGET_RELEASE_SKIP_LIST will be skipped
+option(AM32_OFFICIAL_RELEASE "If ON, targets in TARGET_RELEASE_SKIP_LIST will be skipped" OFF)
 
-# Release Skip List (Valid targets, but not for public release)
-set(TARGET_RELEASE_SKIP_LIST)
-
+# Dependency Management (Downloads GCC/OpenOCD if missing)
 include(cmake/manage_tools.cmake)
 
-# 2. SUPERBUILD (CI / FULL RELEASE)
-option(AM32_FULLBUILD "Build all architectures (ARM & RISC-V)" OFF)
+# Permanently Broken / Invalid Targets (Never Build)
+set(TARGET_SKIP_LIST
+    "DAKEFPV_35A_F415")
 
-if(AM32_FULLBUILD)
-    project(AM32_SuperBuild NONE)
-    include(ExternalProject)
+# Private / Test Targets (Build in CI, Skip in Official Release)
+set(TARGET_RELEASE_SKIP_LIST    
+    "LMNR_SIEGE_100A8S_SINGLE_G071"
+    "LMNR_SIEGE_80A8S_4IN1_G071"
+    "VORTEX_100A_F421"
+    "VORTEX_80A_F421"
+)
 
-    ExternalProject_Add(AM32_ARM
-        SOURCE_DIR "${CMAKE_CURRENT_SOURCE_DIR}"
-        BINARY_DIR "${CMAKE_CURRENT_BINARY_DIR}/build_arm"
-        CMAKE_ARGS "-DARCH=ARM" 
-                   "-DCMAKE_TOOLCHAIN_FILE=${CMAKE_CURRENT_SOURCE_DIR}/cmake/toolchains/arm-none-eabi.cmake" 
-                   "-DCMAKE_EXPORT_COMPILE_COMMANDS=ON"
-        INSTALL_COMMAND "" 
-        USES_TERMINAL_CONFIGURE ON 
-        USES_TERMINAL_BUILD ON
-    )
-    ExternalProject_Add(AM32_WCH_RISCV
-         SOURCE_DIR "${CMAKE_CURRENT_SOURCE_DIR}"
-         BINARY_DIR "${CMAKE_CURRENT_BINARY_DIR}/build_wch_riscv"
-         CMAKE_ARGS "-DARCH=WCH_RISCV" 
-                    "-DCMAKE_TOOLCHAIN_FILE=${CMAKE_CURRENT_SOURCE_DIR}/cmake/toolchains/wch-riscv-none-embed.cmake" 
-                    "-DCMAKE_EXPORT_COMPILE_COMMANDS=ON"
-         INSTALL_COMMAND "" 
-         USES_TERMINAL_CONFIGURE ON 
-         USES_TERMINAL_BUILD ON
-     )
-    return() 
-endif()
-
-# 3. TOOLCHAIN SELECTION
+# TOOLCHAIN SELECTION
 if(NOT DEFINED CMAKE_TOOLCHAIN_FILE)
     if(ARCH STREQUAL "ARM")
         set(CMAKE_TOOLCHAIN_FILE "${CMAKE_CURRENT_SOURCE_DIR}/cmake/toolchains/arm-none-eabi.cmake")
@@ -52,17 +32,17 @@ if(NOT DEFINED CMAKE_TOOLCHAIN_FILE)
     endif()
 endif()
 
-# 4. PROJECT INITIALIZATION
+# PROJECT INITIALIZATION
 project(AM32_${ARCH} C ASM)
 
-# 5. MODULE LOADING
+# MODULE LOADING
 list(APPEND CMAKE_MODULE_PATH "${CMAKE_SOURCE_DIR}/cmake/modules")
 include(VersionUtils)
 include(TargetFactory)
 
 message(STATUS "[${ARCH}] Configuring AM32 v${FIRMWARE_VERSION} (${FIRMWARE_GIT_HASH})")
 
-# 6. LOAD TARGETS
+# LOAD TARGETS
 if(ARCH STREQUAL "ARM")
     file(GLOB TARGETS "${CMAKE_SOURCE_DIR}/cmake/targets/arm/*.cmake")
 elseif(ARCH STREQUAL "WCH_RISCV")
@@ -74,8 +54,10 @@ foreach(T ${TARGETS})
     include(${T})
 endforeach()
 
-# 7. IDE CONFIGURATION
-include(VscodeGenerator)
-am32_generate_launch_json()
+# IDE CONFIGURATION (Local Builds Only)
+if(NOT AM32_OFFICIAL_RELEASE)
+    include(VscodeGenerator)
+    am32_generate_launch_json()
+endif()
 
 message(STATUS "--- Configuration Complete ---")

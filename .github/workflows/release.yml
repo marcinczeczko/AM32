@@ -42,56 +42,10 @@ jobs:
     
     - name: Configure & Build
       run: |
-        cmake --preset ${{ matrix.configure }}
+        cmake --preset ${{ matrix.configure }} -DAM32_OFFICIAL_RELEASE=ON
         cmake --build --preset ${{ matrix.build_preset }}
 
-    # --- NEW STEP: CLEANUP RELEASE ARTIFACTS ---
-    - name: Filter Release Targets
-      run: |
-        python3 - << 'EOF'
-        import re
-        import os
-        import glob
-
-        # 1. Parse the Release Skip List
-        skip_list = set()
-        try:
-            with open("CMakeLists.txt", "r") as f:
-                content = f.read()
-                # Search for set(TARGET_RELEASE_SKIP_LIST ...)
-                match = re.search(r"set\s*\(\s*TARGET_RELEASE_SKIP_LIST\s+([^)]+)\)", content, re.DOTALL)
-                if match:
-                    items = re.findall(r'"([^"]*)"', match.group(1))
-                    for item in items:
-                        skip_list.add(item.strip())
-            print(f"Targets to exclude from release: {skip_list}")
-        except FileNotFoundError:
-            print("CMakeLists.txt not found.")
-
-        # 2. Delete matching Hex files
-        # We look for files matching the pattern: AM32_{TARGETNAME}_*.hex
-        # Logic matches your new naming convention from TargetFactory
-        
-        build_dir = "build" 
-        
-        # Walk through build directory to find hex files
-        for root, dirs, files in os.walk(build_dir):
-            for filename in files:
-                if filename.endswith(".hex"):
-                    # Filename format: AM32_TARGETNAME_VERSION.hex
-                    # We check if any "skipped target" is inside the filename
-                    for target in skip_list:
-                        # Construct the specific search pattern for this target
-                        # e.g. "AM32_MY_BOARD_" to avoid partial matches
-                        search_pattern = f"AM32_{target}_"
-                        
-                        if search_pattern in filename:
-                            full_path = os.path.join(root, filename)
-                            print(f"Deleting excluded target: {filename}")
-                            os.remove(full_path)
-                            break
-        EOF
-
+    # Upload directly (Python cleanup script is no longer needed!)
     - name: Upload for Release
       uses: actions/upload-artifact@v4
       with:
