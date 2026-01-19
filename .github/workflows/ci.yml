@@ -17,10 +17,12 @@ jobs:
       matrix: ${{ steps.set-matrix.outputs.matrix }}
     steps:
       - uses: actions/checkout@v4
-      
-      # We only need CMake for the query step
-      - name: Install Tools
-        run: sudo apt-get update && sudo apt-get install -y cmake
+        with:
+            submodules: false # Don't fetch submodules here (saves bandwidth/time)
+            fetch-depth: 1    # Only fetch the latest commit
+
+      - name: Mock Toolchain Manager
+        run: echo "" > cmake/manage_tools.cmake
 
       - name: Generate Target Matrix
         id: set-matrix
@@ -42,9 +44,15 @@ jobs:
           for p in presets:
               print(f"Checking preset: {p['name']}...")
               
-              # 1. Run CMake Configure
-              # This runs all CMake logic (skip lists, validation) without compiling code.
-              cmd = ["cmake", "--preset", p['configure']]
+              # 1. Run CMake (Dry Run)
+              # We pass -DCMAKE_C_COMPILER=gcc to force using the pre-installed system compiler.
+              # This prevents CMake from erroring out if your specific cross-compiler isn't downloaded yet.
+              # Since we use -N (view mode), the compiler architecture doesn't matter, we just need to parse the log.
+              cmd = [
+                  "cmake", "--preset", p['configure'], 
+                  "-DCMAKE_C_COMPILER=gcc", 
+                  "-DCMAKE_ASM_COMPILER=gcc"
+              ]
               
               try:
                   # Capture both stdout and stderr
