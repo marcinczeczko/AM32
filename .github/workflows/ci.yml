@@ -42,9 +42,9 @@ jobs:
           for p in presets:
               print(f"Checking preset: {p['name']}...")
               
-              # 1. Run CMake Configure (Dry Run -N)
+              # 1. Run CMake Configure
               # This runs all CMake logic (skip lists, validation) without compiling code.
-              cmd = ["cmake", "--preset", p['configure'], "-N"]
+              cmd = ["cmake", "--preset", p['configure']]
               
               try:
                   # Capture both stdout and stderr
