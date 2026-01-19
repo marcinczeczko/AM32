@@ -123,15 +123,54 @@ jobs:
 
       - name: Setup toolset
         run: cmake -P cmake/manage_tools.cmake
-      
+
+      # 1. GENERATE VERSION SUFFIX
+      # If it's a tag, use the tag name (v2.20).
+      # If it's a generic commit, use the short Git Hash (7 chars).
+      - name: Determine Version
+        id: version
+        run: |
+          if [[ $GITHUB_REF == refs/tags/* ]]; then
+            VERSION=${GITHUB_REF#refs/tags/}
+          else
+            VERSION=$(git rev-parse --short HEAD)
+          fi
+          echo "VERSION=$VERSION" >> $GITHUB_ENV
+          echo "Computed version suffix: $VERSION"
+
       - name: Configure
         run: cmake --preset ${{ matrix.configure }}
 
       - name: Build Target
         run: cmake --build --preset ${{ matrix.build_preset }} --target ${{ matrix.name }}
 
+      # 2. RENAME & FLATTEN
+      # Find the built hex file (which CMake named AM32_TARGET_X.XX.hex)
+      # Rename it to include the Git Hash for clarity, and move it to a clean folder.
+      - name: Prepare Artifact
+        run: |
+          mkdir -p staging
+          
+          # Find the generated hex file (regardless of CMake's internal versioning)
+          # We search in build directories
+          HEX_FILE=$(find build -name "*.hex" | head -n 1)
+          
+          if [ -z "$HEX_FILE" ]; then
+            echo "Error: No .hex file found!"
+            exit 1
+          fi
+          
+          # New Name: AM32_TARGET_GITHASH.hex
+          NEW_NAME="AM32_${{ matrix.name }}_${{ env.VERSION }}.hex"
+          
+          cp "$HEX_FILE" "staging/$NEW_NAME"
+          echo "Prepared: staging/$NEW_NAME"
+
+      # 3. UPLOAD (Clean Name & Flat Structure)
       - name: Upload Artifact
         uses: actions/upload-artifact@v4
         with:
-          name: ${{ matrix.name }}
-          path: build/**/*.hex
+          # This controls the label in the GitHub UI list
+          name: AM32_${{ matrix.name }}_${{ env.VERSION }}
+          # Uploading the file directly (not a wildcard path) flattens the zip
+          path: staging/*.hex

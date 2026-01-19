@@ -5,7 +5,7 @@ on:
     tags: [ 'v*' ]
 
 permissions:
-  contents: write # Required to create the Release
+  contents: write
 
 jobs:
   build-release:
@@ -17,7 +17,6 @@ jobs:
           - name: "ARM"
             configure: "arm"
             build_preset: "build-arm"
-            # Define output artifact name to keep matrix simple
             artifact_name: "firmware-arm"
           - name: "WCH RISC-V"
             configure: "wch-riscv"
@@ -31,7 +30,6 @@ jobs:
     - name: Install Tools
       run: sudo apt-get update && sudo apt-get install -y ninja-build cmake python3
 
-    # Reuse the same cache from CI to speed up release
     - name: Restore Tools Cache
       uses: actions/cache@v4
       with:
@@ -47,7 +45,53 @@ jobs:
         cmake --preset ${{ matrix.configure }}
         cmake --build --preset ${{ matrix.build_preset }}
 
-    # Upload specifically for the Release Job to pick up
+    # --- NEW STEP: CLEANUP RELEASE ARTIFACTS ---
+    - name: Filter Release Targets
+      run: |
+        python3 - << 'EOF'
+        import re
+        import os
+        import glob
+
+        # 1. Parse the Release Skip List
+        skip_list = set()
+        try:
+            with open("CMakeLists.txt", "r") as f:
+                content = f.read()
+                # Search for set(TARGET_RELEASE_SKIP_LIST ...)
+                match = re.search(r"set\s*\(\s*TARGET_RELEASE_SKIP_LIST\s+([^)]+)\)", content, re.DOTALL)
+                if match:
+                    items = re.findall(r'"([^"]*)"', match.group(1))
+                    for item in items:
+                        skip_list.add(item.strip())
+            print(f"Targets to exclude from release: {skip_list}")
+        except FileNotFoundError:
+            print("CMakeLists.txt not found.")
+
+        # 2. Delete matching Hex files
+        # We look for files matching the pattern: AM32_{TARGETNAME}_*.hex
+        # Logic matches your new naming convention from TargetFactory
+        
+        build_dir = "build" 
+        
+        # Walk through build directory to find hex files
+        for root, dirs, files in os.walk(build_dir):
+            for filename in files:
+                if filename.endswith(".hex"):
+                    # Filename format: AM32_TARGETNAME_VERSION.hex
+                    # We check if any "skipped target" is inside the filename
+                    for target in skip_list:
+                        # Construct the specific search pattern for this target
+                        # e.g. "AM32_MY_BOARD_" to avoid partial matches
+                        search_pattern = f"AM32_{target}_"
+                        
+                        if search_pattern in filename:
+                            full_path = os.path.join(root, filename)
+                            print(f"Deleting excluded target: {filename}")
+                            os.remove(full_path)
+                            break
+        EOF
+
     - name: Upload for Release
       uses: actions/upload-artifact@v4
       with:
@@ -63,16 +107,13 @@ jobs:
       uses: actions/download-artifact@v4
       with:
         path: firmware
-        merge-multiple: true # Merges ARM and RISC-V hex files into one folder
+        merge-multiple: true
 
     - name: Package Assets
       run: |
         cd firmware
-        # Flatten directory structure if necessary
         find . -type f -name "*.hex" -exec mv {} . \;
         find . -type d -empty -delete
-        
-        # Generate hash
         sha256sum *.hex > checksums.txt
 
     - name: Create GitHub Release
