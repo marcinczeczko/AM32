@@ -101,7 +101,7 @@ jobs:
   # -----------------------------------------------------------------------------
   build:
     needs: setup-matrix
-    name: ${{ matrix.name }}
+    name: AM32_${{ matrix.name }}
     runs-on: ubuntu-latest
     strategy:
       fail-fast: false
