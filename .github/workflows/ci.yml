@@ -11,17 +11,10 @@ jobs:
   # JOB 1: MATRIX GENERATOR
   # Parses CMakeLists.txt and targets.h to generate a dynamic build list.
   # -----------------------------------------------------------------------------
-  setup-matrix:
-    runs-on: ubuntu-latest
-    outputs:
-      matrix: ${{ steps.set-matrix.outputs.matrix }}
-    steps:
-    - uses: actions/checkout@v4
-    
     - name: Generate Target Matrix
       id: set-matrix
       run: |
-        python3 -c '
+        python3 - << 'EOF'
         import re
         import json
         import os
@@ -31,25 +24,25 @@ jobs:
         try:
             with open("CMakeLists.txt", "r") as f:
                 cmake_content = f.read()
-                # Finds: set(TARGET_SKIP_LIST "A" "B" ...) across multiple lines
+                # Regex finds: set(TARGET_SKIP_LIST "A" "B" ...) across multiple lines
                 match = re.search(r"set\s*\(\s*TARGET_SKIP_LIST\s+([^)]+)\)", cmake_content, re.DOTALL)
                 if match:
                     # Split by whitespace and clean quotes
                     raw_items = match.group(1).split()
                     for item in raw_items:
-                        clean_item = item.strip("\"\'")
+                        # This line was breaking it before:
+                        clean_item = item.strip("\"\'") 
                         if clean_item:
                             skip_list.add(clean_item)
             print(f"Skipping targets from CMakeLists: {skip_list}")
         except FileNotFoundError:
             print("Warning: CMakeLists.txt not found, no skip list loaded.")
 
-        # --- 2. PARSE targets.h (SIMPLE SCAN) ---
+        # --- 2. PARSE targets.h ---
         targets = []
         PRESET_ARM = "build-arm"
         PRESET_RISCV = "build-wch"
 
-        # Regex to find: #define FILE_NAME "MY_TARGET"
         re_filename = re.compile(r"^\s*#define\s+FILE_NAME\s+\"([^\"]+)\"")
 
         try:
@@ -59,12 +52,11 @@ jobs:
                     if match:
                         board_name = match.group(1)
 
-                        # Check Skip List
                         if board_name in skip_list:
                             print(f"{board_name} is skipped")
                             continue
 
-                        # Determine MCU Architecture - FIXME: there should be a better way...
+                        # Architecture Logic
                         if "_V203" in board_name or "CH32" in board_name: 
                             preset = PRESET_RISCV
                             configure = "wch-riscv"
@@ -82,7 +74,6 @@ jobs:
             print("Error: Inc/targets.h not found")
             exit(1)
 
-        # Output JSON
         if not targets:
              print("No targets found!")
              exit(1)
@@ -92,7 +83,7 @@ jobs:
         
         with open(os.environ["GITHUB_OUTPUT"], "a") as f:
             f.write(f"matrix={matrix_json}")
-        '
+        EOF
 
   # -----------------------------------------------------------------------------
   # JOB 2: DYNAMIC BUILD
