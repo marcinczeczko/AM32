@@ -21,6 +21,7 @@ jobs:
             submodules: false # Don't fetch submodules here (saves bandwidth/time)
             fetch-depth: 1    # Only fetch the latest commit
 
+      # mocking toolchain manager to prevent fetching all the havy ARM and risc toolchain - not requried to build targets matrix
       - name: Mock Toolchain Manager
         run: echo "" > cmake/manage_tools.cmake
 
@@ -47,7 +48,7 @@ jobs:
               # 1. Run CMake (Dry Run)
               # We pass -DCMAKE_C_COMPILER=gcc to force using the pre-installed system compiler.
               # This prevents CMake from erroring out if your specific cross-compiler isn't downloaded yet.
-              # Since we use -N (view mode), the compiler architecture doesn't matter, we just need to parse the log.
+              # Here it doesn't matter as we simply grabbing parsed targets from log only.
               cmd = [
                   "cmake", "--preset", p['configure'],
                   "-DCMAKE_TOOLCHAIN_FILE=", # this will skip toolchain setting from presets 
@@ -92,11 +93,10 @@ jobs:
           EOF
 
   # -----------------------------------------------------------------------------
-  # JOB 2: DYNAMIC BUILD
+  # JOB 2: THE BUILD
   # -----------------------------------------------------------------------------
   build:
     needs: setup-matrix
-    # Sidebar Name: AM32_TARGETNAME
     name: AM32_${{ matrix.name }}
     runs-on: ubuntu-latest
     strategy:
@@ -121,7 +121,7 @@ jobs:
       - name: Setup toolset
         run: cmake -P cmake/manage_tools.cmake
 
-      # 1. CALCULATE VERSION 
+      # CALCULATE VERSION 
       # Tag -> v2.20, Commit -> Short Hash (a1b2c3d)
       - name: Determine Version
         id: version
@@ -140,7 +140,7 @@ jobs:
       - name: Build Target
         run: cmake --build --preset ${{ matrix.build_preset }} --target ${{ matrix.name }}
 
-      # 2. RENAME & FLATTEN
+      # RENAME & FLATTEN
       # Finds the CMake output (AM32_TARGET_X.XX.hex)
       # Renames it to AM32_TARGET_GITHASH.hex for clarity in CI artifacts
       - name: Prepare Artifact
@@ -161,7 +161,7 @@ jobs:
           cp "$HEX_FILE" "staging/$NEW_NAME"
           echo "Prepared: staging/$NEW_NAME"
 
-      # 3. UPLOAD
+      # UPLOAD
       # Result: A zip file named AM32_TARGET_VER.hex.zip containing ONE file.
       - name: Upload Artifact
         uses: actions/upload-artifact@v4
