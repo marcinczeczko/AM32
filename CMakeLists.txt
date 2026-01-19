@@ -6,7 +6,7 @@ cmake_minimum_required(VERSION 3.20)
 # 1. PRE-FLIGHT CONFIGURATION
 set(TARGET_SKIP_LIST 
     "DAKEFPV_35A_F415"
-    "CM_MINI_E230"
+    "CM Mini V3"
     "SWAP_PB0_PB7"
     "IFLIGHT_TEST_F4A"
     "NEUTRON_2_6S_AIO")
